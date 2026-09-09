@@ -1,0 +1,87 @@
+run time logging 22/06/2026
+
+
+sorosa@jetson:~/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_90_Testing_ERL_20072026/build$ ./MySystem --algo SobelEdge --mode ERL 60 config.json
+[18:52:26.151] [info] [CUDA] Detected: YES | Device: NVIDIA Tegra X1 | Compute Capability: 5.3 | Memory: 1.91 GB
+[18:52:26.151] [info] ============================================================
+[18:52:26.151] [info] PhD Benchmark Harness v30
+[18:52:26.151] [info] 5 image-processing algorithms × 4 control modes
+[18:52:26.151] [info] CUDA Available: YES
+[18:52:26.151] [info] ============================================================
+[18:52:26.152] [info] Thread pool started with 2 threads
+[18:52:26.153] [info] [THERMAL] temp_weight=0.50  power_weight=0.50  (offset=0.00)
+[18:52:26.153] [info] ============================================================
+[18:52:26.153] [info] BENCHMARK CASE: SobelEdge_ERL
+[18:52:26.153] [info] ============================================================
+[18:52:26.153] [info] Algorithm       : SobelEdge
+[18:52:26.153] [info] Mode            : ERL
+[18:52:26.153] [info] GPU Capable     : YES
+[18:52:26.153] [info] Config useGPU   : YES
+[18:52:26.153] [info] Concurrency     : 2
+[18:52:26.153] [info] Scheduler       : ON
+[18:52:26.153] [info] ERL             : ON
+[18:52:26.153] [info] Fallback note   : CPU fallback = processEdgeDetectionZeroCopy
+[18:52:26.153] [info] ---- Effective ERL / GA configuration ----
+[18:52:26.153] [info] ga_population_size     = 8
+[18:52:26.153] [info] ga_min_pop_size        = 4
+[18:52:26.153] [info] ga_elite_count         = 2
+[18:52:26.153] [info] ga_crossover_rate      = 0.70
+[18:52:26.153] [info] ga_mutation_rate       = 0.15
+[18:52:26.153] [info] ga_exploration_decay   = 0.96
+[18:52:26.153] [info] ga_reduction_start_gen = 10
+[18:52:26.153] [info] ga_reduction_ratio     = 0.60
+[18:52:26.153] [info] pareto_csv             = output/pareto_SobelEdge_ERL_20260725_185226.csv
+[18:52:26.153] [info] action_csv             = output/actions_SobelEdge_ERL_20260725_185226.csv
+[18:52:26.153] [info] ============================================================
+[18:52:26.153] [info] [SharedQueue] Initialized with maxSize: 200.
+[18:52:26.153] [info] [SharedQueue] Initialized with maxSize: 200.
+[18:52:26.153] [info] [SharedQueue] Initialized with maxSize: 300.
+[18:52:26.153] [info] [ConfigManager] Queues created: cam2Alg=200, cam2Disp=200, alg2Disp=300
+[18:52:26.154] [info] [Aggregator] Initialized with config: retention=2000s, prune=5s, maxPending=2000, maxHistory=10000
+[18:52:26.154] [info] [ConfigManager] Aggregator initialized with metrics_csv = output/metrics_SobelEdge_ERL_20260725_185226.csv
+[18:52:26.154] [info] [DisplayModule] Validating configuration...
+[18:52:26.154] [info] [ConfigManager] [1/5] Display created (Consumer first)
+[18:52:26.154] [info] [AlgorithmModule] Validating configuration...
+[18:52:26.154] [info] [AlgorithmModule] Validation successful: algorithmType=SobelEdge
+[18:52:26.154] [info] [ConfigManager] [2/5] Algorithm created
+[18:52:26.154] [info] [CameraModule] Validating configuration...
+[18:52:26.154] [info] [CameraModule] Camera validated | device=/dev/video0 output=320x240 fps=60 pixelFormat=YUYV numBuffers=8
+[18:52:26.154] [info] [ConfigManager] [3/5] Camera created (Producer last)
+[18:52:26.154] [info] [ConfigManager] [4/5] SoC created
+[18:52:26.154] [info] [LynsynModule] Validating configuration...
+[18:52:26.154] [info] [LynsynModule] Ensured directory: /home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_90_Testing_ERL_20072026/build/output
+[18:52:26.154] [info] [LynsynModule] Using outputCSV: '/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_90_Testing_ERL_20072026/build/output/lynsyn_SobelEdge_ERL_20260725_185226.csv'
+[18:52:26.154] [info] [ConfigManager] [4/5] Lynsyn created
+[18:52:26.154] [info] [ConfigManager] [5/5] Initializing Evolutionary Selector (ERL)...
+[18:52:26.154] [info] [EvolutionarySelector] Effective ERL config: pop=8 minPop=4 elite=2 cross=0.70 mut=0.15 interval=800ms export=ON pareto_csv=output/pareto_SobelEdge_ERL_20260725_185226.csv action_csv=output/actions_SobelEdge_ERL_20260725_185226.csv minFPS=1.00 requirePower=NO
+[18:52:26.154] [info] [EvolutionarySelector] AdaptiveWeightManager configured (update every 5 gens, thermal_crit=63°C/63°C)
+[18:52:26.154] [info] [GeneticAlgorithm] Deterministic RNG seed = 42
+[18:52:26.154] [info] [GeneticAlgorithm] Initialized population of size 8 (target_fps range 20-60, freq gene enabled)
+[18:52:26.155] [info] [GeneticAlgorithm] Pareto-ERL Gold Standard ready (pop=8, reduction at gen 10, evidence_export=ON, pareto_csv=output/pareto_SobelEdge_ERL_20260725_185226.csv, action_csv=output/actions_SobelEdge_ERL_20260725_185226.csv)
+[18:52:26.155] [info] [AdaptiveWeightManager] Initialized (thermal_warn=57°C, thermal_crit=63°C, battery_crit=3.5W, latency_sla=30ms)
+[18:52:26.155] [info] [GeneticAlgorithm] AdaptiveWeightManager ENABLED (update_interval=5 gens, smoothing=0.30)
+[18:52:26.155] [info] [EvolutionarySelector] - Pareto-GA Hybrid Ready (pop=8-4, reduction at gen 10)
+[18:52:26.155] [info] [EvolutionarySelector] Validating configuration...
+[18:52:26.155] [info] [EvolutionarySelector] Validation successful
+[18:52:26.155] [info] [ConfigManager] Pipeline built: 6 modules (Display ? Algorithm ? Camera order).
+[18:52:26.155] [info] [DisplayModule] Validating configuration...
+[18:52:26.155] [info] [AlgorithmModule] Validating configuration...
+[18:52:26.155] [info] [AlgorithmModule] Validation successful: algorithmType=SobelEdge
+[18:52:26.155] [info] [CameraModule] Validating configuration...
+[18:52:26.155] [info] [CameraModule] Camera validated | device=/dev/video0 output=320x240 fps=60 pixelFormat=YUYV numBuffers=8
+[18:52:26.155] [info] [LynsynModule] Validating configuration...
+[18:52:26.155] [info] [LynsynModule] Ensured directory: /home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_90_Testing_ERL_20072026/build/output
+[18:52:26.155] [info] [LynsynModule] Using outputCSV: '/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_90_Testing_ERL_20072026/build/output/lynsyn_SobelEdge_ERL_20260725_185226.csv'
+[18:52:26.155] [info] [EvolutionarySelector] Validating configuration...
+[18:52:26.155] [info] [EvolutionarySelector] Validation successful
+[18:52:26.155] [info] [ConfigManager] Starting pipeline modules...
+[18:52:26.155] [info] [ConfigManager] Starting Aggregator...
+[18:52:26.155] [info] [ConfigManager] Starting Module [1/6]
+[18:52:26.155] [info] [DisplayModule] Starting...
+[18:52:26.155] [info] [SdlDisplayConcrete] v3.3 - YUYV camera fix.
+dbus[23888]: arguments to dbus_message_new_method_call() were incorrect, assertion "path != NULL" failed in file ../../../dbus/dbus-message.c line 1362.
+This is normally a bug in some application using the D-Bus library.
+
+  D-Bus not built with -rdynamic so unable to print a backtrace
+Aborted (core dumped)
+ansorosa@jetson:~/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_90_Testing_ERL_20072026/build$ 

@@ -1,0 +1,39 @@
+classDiagram
+    class SystemMetricsAggregatorConcrete {
+        +enableCsvExport(bool)
+        +enableJsonExport(bool)
+        +pushMetrics(time, updateFunc)
+        +exportMetricsToCsv()
+        +exportMetricsToJson()
+        -std::mutex snapshotMutex_
+        -SystemMetricsSnapshot snapshot_
+        -bool exportCsv_
+        -bool exportJson_
+    }
+
+    class JetsonNanoInfo {
+        +CPU_Temperature_C
+        +GPU_Temperature_C
+        +RAM_In_Use_MB
+        +Total_RAM_MB
+    }
+
+    class PowerStats {
+        +voltages
+        +currents
+        +powers
+        +totalPower()
+        +averagePower()
+    }
+
+    class SystemMetricsSnapshot {
+        +JetsonNanoInfo socStats
+        +PowerStats powerStats
+        +AlgorithmStats algorithmStats
+        +CameraStats cameraStats
+        +DisplayStats displayStats
+    }
+
+    SystemMetricsAggregatorConcrete --> SystemMetricsSnapshot : owns
+    SystemMetricsSnapshot --> JetsonNanoInfo : contains
+    SystemMetricsSnapshot --> PowerStats : contains

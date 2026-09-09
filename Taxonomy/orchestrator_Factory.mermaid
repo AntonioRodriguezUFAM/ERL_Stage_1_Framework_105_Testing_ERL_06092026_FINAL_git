@@ -1,0 +1,22 @@
+
+```mermaid
+flowchart TD
+    A[SystemModelingFactory] --> B{Initialize System}
+    B --> C[Create multiple DataConcrete objects <br/> for each /dev/videoX]
+    B --> D[Spawn one capture thread <br/> per DataConcrete]
+    D --> E[Thread calls: DataConcrete::startStreaming()]
+    E --> F[Loop: dequeFrame() -> push to queue -> queueBuffer()]
+    F --> G[Data arrives in SharedQueue]
+
+    G --> H[AlgorithmConcrete thread <br/> pop frames from queue]
+    H --> I[runInference() <br/> or other processing]
+    I --> J[Results or next pipeline stage]
+
+    B --> K((Advanced Scheduling))
+    K --> D
+
+    style B stroke:#094E99,stroke-width:2px,stroke-dasharray: 5,5
+    style D stroke:#094E99,stroke-width:2px,stroke-dasharray: 5,5
+    style H stroke:#d76324,stroke-width:2px,stroke-dasharray: 5,5
+    style I stroke:#d76324,stroke-width:2px,stroke-dasharray: 5,5
+```

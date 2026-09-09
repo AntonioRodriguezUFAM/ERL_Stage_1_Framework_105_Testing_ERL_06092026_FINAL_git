@@ -1,0 +1,33 @@
+sudo bash -c '
+echo "--> [CSI RESET] Freeing /dev/video0 from zombie processes..."
+fuser -k /dev/video0 2>/dev/null || true
+pkill -f "gst-launch-1.0"   2>/dev/null || true
+pkill -f "nvarguscamerasrc" 2>/dev/null || true
+pkill -f "v4l2-ctl"          2>/dev/null || true
+pkill -f "MySystem"         2>/dev/null || true
+
+echo "--> [CSI RESET] Restarting NVIDIA Argus daemon..."
+systemctl restart nvargus-daemon 2>/dev/null || service nvargus-daemon restart 2>/dev/null || true
+sleep 3
+
+echo "--> [CSI RESET] Pre-flight validation: 1280x720 RG10 @ 60 FPS..."
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=1280,height=720,pixelformat=RG10 >/dev/null 2>&1 || true
+v4l2-ctl -d /dev/video0 --set-parm=60 >/dev/null 2>&1 || true
+
+parm=$(v4l2-ctl -d /dev/video0 --get-parm 2>/dev/null)
+actual=$(echo "$parm" | grep -oE '\''Frames per second: [0-9.]+'\'' | grep -oE '\''[0-9.]+'\'' | head -1)
+if [ -n "$actual" ]; then
+    echo "    [CSI] Sensor reports ${actual} FPS."
+    awk "BEGIN{exit !($actual < 55)}" && \
+        echo "    [CSI WARN] Sensor below 60 FPS (${actual}); check sensor_mode=4."
+fi
+
+if ! v4l2-ctl -d /dev/video0 --stream-mmap=8 --stream-count=30 --stream-to=/dev/null >/dev/null 2>&1; then
+    echo "    [FATAL] /dev/video0 failed burst validation (still busy or HW crash)."
+    echo "    Aborting execution."
+    exit 1
+fi
+echo "    [SUCCESS] CSI pipeline verified and flowing."
+'
+```
+

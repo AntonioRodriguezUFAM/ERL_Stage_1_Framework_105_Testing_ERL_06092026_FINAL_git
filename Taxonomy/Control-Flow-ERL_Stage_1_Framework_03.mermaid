@@ -1,0 +1,259 @@
+```mermaid
+sequenceDiagram
+    participant Main
+    participant ConfigManager
+    participant ConcreteFactory
+    participant SystemModelingFactory
+    participant SystemCaptureFactory
+    participant SystemProfilingFactory
+    participant FeatureOptimizationFactory
+    participant MultiObjectiveOptimizationFactory
+    participant BenchmarkingFactory
+    participant FeedbackLoopFactory
+    participant FutureDevelopmentFactory
+    participant Components
+    participant PluginRegistry
+
+    %% Initialization
+    Main->>ConfigManager: Create & Initialize Configs
+    Main->>ConfigManager: Load Configuration
+    Main->>ConcreteFactory: Create ConcreteFactory (with SystemModelingFactory, SystemCaptureFactory, SystemProfilingFactory)
+
+    %% Stage 01
+    rect rgb(200, 200, 255)
+        Note over Main,Components: Stage 01: System Modeling & Characterization
+
+        rect rgb(230, 230, 255)
+        Note over Main,Components: Level 1 (System Modeling)
+
+            rect rgb(230, 250, 255)
+            Note over Main,Components: Step 01 - Raw Data Format (TegraStats)
+            Main->>ConcreteFactory: createRawDataFormat()
+            ConcreteFactory->>SystemModelingFactory: Delegate (RawDataFormat)
+            SystemModelingFactory-->>Components: Create RawDataFormat Component
+            Components-->>Main: Return RawDataFormat Component
+            end
+
+            rect rgb(220, 240, 255)
+            Note over Main,Components: Step 02 - SoC (Jetson Nano Specs)
+            Main->>ConcreteFactory: createSoCComponent()
+            ConcreteFactory->>SystemModelingFactory: Delegate (SoC)
+            SystemModelingFactory-->>Components: Create SoCConcrete
+            Components-->>Main: Return SoCConcrete
+            end
+
+            rect rgb(210, 230, 255)
+            Note over Main,Components: Step 03 - Algorithm (Optical Filter)
+            Main->>ConcreteFactory: createAlgorithmComponent()
+            ConcreteFactory->>SystemModelingFactory: Delegate (Algorithm)
+            SystemModelingFactory-->>Components: Create AlgorithmConcrete
+            Components-->>Main: Return AlgorithmConcrete
+            end
+
+            rect rgb(200, 220, 255)
+            Note over Main,Components: Step 04 - Data (Images)
+            Main->>ConcreteFactory: createDataComponent()
+            ConcreteFactory->>SystemModelingFactory: Delegate (Data)
+            SystemModelingFactory-->>Components: Create DataConcrete
+            Components-->>Main: Return DataConcrete
+            end
+
+            rect rgb(190, 210, 255)
+            Note over Main,Components: Step 05 - Constraints (Power Consumption)
+            Main->>ConcreteFactory: createConstraintsComponent()
+            ConcreteFactory->>SystemModelingFactory: Delegate (Constraints)
+            SystemModelingFactory-->>Components: Create Constraints Component
+            Components-->>Main: Return Constraints Component
+            end
+
+            rect rgb(180, 200, 255)
+            Note over Main,Components: Step 06 - Optimization (Core Utilization)
+            Main->>ConcreteFactory: createOptimizationComponent()
+            ConcreteFactory->>SystemModelingFactory: Delegate (Optimization)
+            SystemModelingFactory-->>Components: Create Optimization Component
+            Components-->>Main: Return Optimization Component
+            end
+
+            rect rgb(170, 190, 255)
+            Note over Main,Components: Step 07 - Learning (Dynamic Core Utilization)
+            Main->>ConcreteFactory: createLearningComponent()
+            ConcreteFactory->>SystemModelingFactory: Delegate (Learning)
+            SystemModelingFactory-->>Components: Create Learning Component
+            Components-->>Main: Return Learning Component
+            end
+
+        end
+
+        rect rgb(200, 210, 255)
+        Note over Main,Components: Level 2 - System Capture (manages multiple cameras, algorithms, and optional SoC monitoring)
+        Main->>ConcreteFactory: createSystemCapture()
+        ConcreteFactory->>SystemCaptureFactory: Delegate (SystemCapture)
+        SystemCaptureFactory-->>Components: Create SystemCapture Component (the orchestrator)
+        Components-->>Main: Return SystemCapture Component
+        end
+
+        rect rgb(190, 200, 255)
+        Note over Main,Components: Level 3 - System Profiling
+        Main->>ConcreteFactory: createSystemProfiling()
+        ConcreteFactory->>SystemProfilingFactory: Delegate (SystemProfiling)
+        SystemProfilingFactory-->>Components: Create SystemProfiling Component
+        Components-->>Main: Return SystemProfiling Component
+        end
+
+    end
+
+    %% Stage 02
+    rect rgb(200, 255, 200)
+    Note over Main,Components: Stage 02: Feature Optimization
+
+        rect rgb(220, 255, 220)
+        Note over Main,Components: Level 1 - Feature Extraction
+        Main->>ConcreteFactory: createFeatureExtraction()
+        ConcreteFactory->>FeatureOptimizationFactory: Delegate (FeatureExtraction)
+        FeatureOptimizationFactory-->>Components: Create FeatureExtraction Component
+        Components-->>Main: Return FeatureExtraction Component
+        end
+
+        rect rgb(210, 245, 210)
+        Note over Main,Components: Level 2 - Feature Selection
+        Main->>ConcreteFactory: createFeatureSelection()
+        ConcreteFactory->>FeatureOptimizationFactory: Delegate (FeatureSelection)
+        FeatureOptimizationFactory-->>Components: Create FeatureSelection Component
+        Components-->>Main: Return FeatureSelection Component
+        end
+
+    end
+
+    %% Stage 03
+    rect rgb(255, 200, 200)
+    Note over Main,Components: Stage 03: Multi-Objective Optimization
+
+        rect rgb(255, 220, 220)
+        Note over Main,Components: Level 1 - Optimization Objectives
+        Main->>ConcreteFactory: createOptimizationObjectives()
+        ConcreteFactory->>MultiObjectiveOptimizationFactory: Delegate (OptimizationObjectives)
+        MultiObjectiveOptimizationFactory-->>Components: Create OptimizationObjectives Component
+        Components-->>Main: Return OptimizationObjectives Component
+        end
+
+        rect rgb(255, 210, 210)
+        Note over Main,Components: Level 2 - Optimization Options (01-04)
+        Main->>ConcreteFactory: createOptimizationOption01()
+        ConcreteFactory->>MultiObjectiveOptimizationFactory: Delegate (OptOption01)
+        MultiObjectiveOptimizationFactory-->>Components: Create OptOption01 Component
+        Components-->>Main: Return OptOption01 Component
+
+        Main->>ConcreteFactory: createOptimizationOption02()
+        ConcreteFactory->>MultiObjectiveOptimizationFactory: Delegate (OptOption02)
+        MultiObjectiveOptimizationFactory-->>Components: Create OptOption02 Component
+        Components-->>Main: Return OptOption02 Component
+
+        Main->>ConcreteFactory: createOptimizationOption03()
+        ConcreteFactory->>MultiObjectiveOptimizationFactory: Delegate (OptOption03)
+        MultiObjectiveOptimizationFactory-->>Components: Create OptOption03 Component
+        Components-->>Main: Return OptOption03 Component
+
+        Main->>ConcreteFactory: createOptimizationOption04()
+        ConcreteFactory->>MultiObjectiveOptimizationFactory: Delegate (OptOption04)
+        MultiObjectiveOptimizationFactory-->>Components: Create OptOption04 Component
+        Components-->>Main: Return OptOption04 Component
+        end
+
+        rect rgb(255, 205, 205)
+        Note over Main,Components: Level 3 - Workload Distribution
+        Main->>ConcreteFactory: createWorkloadDistribution()
+        ConcreteFactory->>MultiObjectiveOptimizationFactory: Delegate (WorkloadDistribution)
+        MultiObjectiveOptimizationFactory-->>Components: Create WorkloadDistribution Component
+        Components-->>Main: Return WorkloadDistribution Component
+        end
+
+    end
+
+    %% Stage 04
+    rect rgb(200, 255, 255)
+    Note over Main,Components: Stage 04: Benchmarking
+
+        rect rgb(220, 255, 255)
+        Note over Main,Components: Level 1 - Performance & Constraint Monitoring
+        Main->>ConcreteFactory: createPerformanceMonitoring()
+        ConcreteFactory->>BenchmarkingFactory: Delegate (PerformanceMonitoring)
+        BenchmarkingFactory-->>Components: Create PerformanceMonitoring Component
+        Components-->>Main: Return PerformanceMonitoring Component
+
+        Main->>ConcreteFactory: createConstraintMonitoring()
+        ConcreteFactory->>BenchmarkingFactory: Delegate (ConstraintMonitoring)
+        BenchmarkingFactory-->>Components: Create ConstraintMonitoring Component
+        Components-->>Main: Return ConstraintMonitoring Component
+        end
+
+        rect rgb(210, 245, 245)
+        Note over Main,Components: Level 2 - Pareto Optimal
+        Main->>ConcreteFactory: createParetoOptimal()
+        ConcreteFactory->>BenchmarkingFactory: Delegate (ParetoOptimal)
+        BenchmarkingFactory-->>Components: Create ParetoOptimal Component
+        Components-->>Main: Return ParetoOptimal Component
+        end
+
+    end
+
+    %% Stage 05
+    rect rgb(255, 255, 200)
+    Note over Main,Components: Stage 05: Feedback Loop
+
+        rect rgb(255, 255, 220)
+        Note over Main,Components: Level 1 - Transfer Learning
+        Main->>ConcreteFactory: createTransferLearning()
+        ConcreteFactory->>FeedbackLoopFactory: Delegate (TransferLearning)
+        FeedbackLoopFactory-->>Components: Create TransferLearning Component
+        Components-->>Main: Return TransferLearning Component
+        end
+
+    end
+
+    %% Stage 06
+    rect rgb(255, 230, 200)
+    Note over Main,Components: Stage 06: Future Development
+
+        rect rgb(255, 235, 210)
+        Note over Main,Components: Level 1 - Future 01
+        Main->>ConcreteFactory: createFuture01Level1()
+        ConcreteFactory->>FutureDevelopmentFactory: Delegate (Future01Level1)
+        FutureDevelopmentFactory-->>Components: Create Future01Level1 Component
+        Components-->>Main: Return Future01Level1 Component
+        end
+
+        rect rgb(255, 240, 220)
+        Note over Main,Components: Level 2 - Future 01
+        Main->>ConcreteFactory: createFuture01Level2()
+        ConcreteFactory->>FutureDevelopmentFactory: Delegate (Future01Level2)
+        FutureDevelopmentFactory-->>Components: Create Future01Level2 Component
+        Components-->>Main: Return Future01Level2 Component
+        end
+
+    end
+
+    %% Dynamic Configuration Update
+    rect rgb(255, 230, 200)
+        Note over Main,ConfigManager: Dynamic Configuration Update
+        Main->>ConfigManager: Trigger Config Reload (file changed)
+        ConfigManager->>ConcreteFactory: Notify Configuration Updated
+        ConcreteFactory->>SystemModelingFactory: Re-fetch updated configs (For System Modeling)
+        ConcreteFactory->>SystemCaptureFactory: Re-fetch updated configs (For System Capture)
+        ConcreteFactory->>SystemProfilingFactory: Re-fetch updated configs (For System Profiling)
+        SystemModelingFactory->>Components: Update parameters based on new configs
+        SystemCaptureFactory->>Components: Update parameters based on new configs
+        SystemProfilingFactory->>Components: Update parameters based on new configs
+        Components->>Main: Components adapt without restart
+    end
+
+    %% Plugin Architecture
+    rect rgb(230, 230, 230)
+        Note over Main,PluginRegistry: Plugin Architecture
+        Main->>ConcreteFactory: loadPlugin("AdvancedSoCPlugin")
+        ConcreteFactory->>PluginRegistry: registerPluginComponents()
+        ConcreteFactory->>SystemModelingFactory: Possibly create plugin-based SoC component
+        SystemModelingFactory->>Components: Create plugin-based component
+        Components->>Main: Return plugin-based component
+    end
+
+```

@@ -1,0 +1,52 @@
+
+
+graph TD
+    A[Camera Device] -->|Captures Frames| B[DataConcrete Producer]
+    B -->|Pushes Frame| C[SharedQueue Thread-Safe Buffer]
+    C -->|Pops Frame| D[AlgorithmConcrete Consumer]
+    D -->|Processes Frame| E[Processed Data]
+
+    %% Additional Details
+    B -->|Uses Mutex & Condition Variables| C
+    D -->|Uses Thread Synchronization| C
+    C -->|Prevents Race Conditions| B
+    C -->|Prevents Race Conditions| D
+
+    %% Error Handling
+    subgraph ErrorHandling
+        B -->|If No Frame| X[Cannot Dequeue Frame: Streaming Not Active]
+        C -->|Queue Empty| Y[Consumer Waits]
+        D -->|Invalid Data| Z[Frame Processing Failed]
+    end
+
+
+classDiagram
+    class SharedQueue {
+        +SharedQueue(size_t maxSize = 0)
+        +void push(T item)
+        +bool pop(T& item)
+        +void stop()
+        +size_t size() const
+        +bool isStopped() const
+        -std::mutex mutex_
+        -std::condition_variable condNotEmpty_
+        -std::condition_variable condNotFull_
+        -std::queue<T> queue_
+        -bool stop_
+        -size_t maxSize_
+    }
+
+    class Producer {
+        +void produce(SharedQueue& queue)
+    }
+
+    class Consumer {
+        +void consume(SharedQueue& queue)
+    }
+
+    Producer --> SharedQueue : "push() adds item"
+    Consumer --> SharedQueue : "pop() removes item"
+    SharedQueue --> Producer : "Blocks if full (bounded mode)"
+    SharedQueue --> Consumer : "Blocks if empty"
+    SharedQueue --> Producer : "stop() unblocks producers"
+    SharedQueue --> Consumer : "stop() unblocks consumers"

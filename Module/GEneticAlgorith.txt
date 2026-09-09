@@ -1,0 +1,11 @@
+// Genetic AlgorithmConcrete
+
+Why Pareto (Multi-Objective) + Scalar Fitness Hybrid is Perfect
+
+Pareto Front (objectives vector): Discovers true trade-offs (FPS vs Power vs Temp vs Latency)  exactly what you need for the thesis.
+Scalar Fitness (fitness field): Enables fast tournament selection, elite preservation, and easy comparison with the old single-objective GA.
+Dominance Analysis: logDominanceAnalysis() already shows why one solution dominates another (the PhD gold-standard visualization).
+Robustness on Jetson Nano 2GB: Dynamic population reduction + crowding distance prevents premature convergence under tight memory/thermal constraints.
+Backward Compatibility: You keep the old EvolutionarySelector control loop structure but delegate the heavy lifting to the new GeneticAlgorithm.
+
+This hybrid approach is strictly better than pure single-objective (old Individual) or pure Pareto because it gives you both rigorous multi-objective analysis and practical single-score ranking.

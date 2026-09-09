@@ -1,0 +1,33 @@
+ERL GeneticAlgorithm_05 production validation
+Date: 2026-08-20
+
+Header: GeneticAlgorithm_05.h
+Matching API: SurrogateModel.h included in this package
+C++ standard: C++14
+Flags: -Wall -Wextra -Wpedantic -Werror
+Validation mode: syntax + smoke execution using minimal Stage_01 / scheduler / spdlog stubs
+STATUS: PASS
+
+Mandatory pre-run fixes verified:
+- No active arbitrary population_[0] selection fallback: PASS
+- lastRank0RunnerUpFitness_ reset every evaluated generation: PASS
+- NSGA-II non-dominated sort delegates to ParetoIndividual::dominates(): PASS
+- Normal deployment requires feasible Rank-0: PASS
+- Ranking-regression defense prefers any feasible evaluated candidate: PASS
+- All-infeasible fallback chooses minimum constraintViolation globally: PASS
+- Adaptive-mutation signal uses same feasibility-aware selector: PASS
+- gpuSplitApplicable default fails closed (false): PASS
+- No latency >= 1000/FPS reality clamp: PASS
+
+Additional production hardening:
+- Four-argument GA constructor preserves cfg.awm_config instead of overwriting it with a default AWM config.
+- Startup logs effective AWM warn/critical thresholds, objective temperature onsets, and gpu_split_applicable.
+- RL replay seeding moved before offspring replacement so it sees the evaluated front.
+- CrossoverRate is now honored.
+- power_budget_watts is inherited and can mutate.
+- Counterfactual surrogate fitness no longer uses current measured GPU-utilization bonus.
+- Surrogate-mode temperature objective no longer mixes candidate CPU prediction with the previous action's measured GPU temperature.
+- Internal objective-2 variable is named powerObjective; schema-v3 CSV retains legacy obj_energy column name for compatibility.
+
+Static SHA256:
+86154933b1152c5e2c5aacf2fb0e7058f0c90e567e3b17ce32a3336b48f8b019  /mnt/data/ERL_GA_PRODUCTION_2026-08-20/GeneticAlgorithm_05.h

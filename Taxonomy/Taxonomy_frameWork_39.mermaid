@@ -1,0 +1,83 @@
+A. High-level pipeline & aggregator (component view)
+D. Timeline diagram (intuitive view of the window)
+
+timeline
+    title Frame N lifecycle and metric windows
+    section Frame Events
+        Capture (Camera)           : T_capture
+        Algorithm Start            : T_alg_start
+        Algorithm End              : T_alg_end
+        Display Render             : T_display
+
+    section SoC Samples
+        SoC s0                     : before T_alg_start
+        SoC s1                     : inside [T_alg_start, T_alg_end]
+        SoC s2                     : inside [T_alg_start, T_alg_end]
+        SoC s3                     : after T_alg_end
+
+    section Power Samples
+        P0                         : before T_alg_start
+        P1                         : inside window
+        P2                         : inside window
+        P3                         : after T_alg_end
+
+
+C. Window integration logic (focused on one frame)
+flowchart LR
+    subgraph Pipeline
+        Data["DataConcrete<br/>Camera Capture"]
+        Alg["AlgorithmConcrete<br/>Image Processing"]
+        Disp["SdlDisplayConcrete<br/>Display"]
+    end
+
+    subgraph Monitoring
+        SoC["SoCConcrete<br/>Jetson Metrics"]
+        Power["LynsynMonitorConcrete<br/>Power Board"]
+    end
+
+    subgraph Aggregator
+        SMA["SystemMetricsAggregator<br/>v3_2"]
+    end
+
+    Data -- "CameraStats (beginFrame)" --> SMA
+    Alg  -- "AlgorithmStats (mergeAlgorithm)" --> SMA
+    Disp -- "DisplayStats (mergeDisplay)" --> SMA
+
+    SoC   -- "SoC samples (pushSoCStats)" --> SMA
+    Power -- "Power samples (pushPowerStats)" --> SMA
+
+    SMA -- "Snapshots per frame (CSV / JSON)" --> Out["metrics_realtime.csv"]
+
+    B. Sequence diagram for a single frame (time flow)
+
+sequenceDiagram
+    participant CAM as DataConcrete
+    participant ALG as AlgorithmConcrete
+    participant SOC as SoCConcrete
+    participant PWR as LynsynMonitorConcrete
+    participant DISP as SdlDisplayConcrete
+    participant AGG as SystemMetricsAggregator
+
+    Note over SOC,PWR: Asynchronous sampling loop<br/>pushSoCStats / pushPowerStats
+
+    CAM->>AGG: beginFrame(frameId, CameraStats)<br/>pf.cam, pf.hasCam = true
+    AGG-->>AGG: store CameraStats, captureTime
+
+    CAM->>ALG: push frame(frameId)
+
+    ALG->>ALG: process frame<br/>record startTime = T_alg_start
+    ALG->>ALG: finish processing<br/>timestamp = T_alg_end
+    ALG->>AGG: mergeAlgorithm(frameId, AlgorithmStats)
+    AGG-->>AGG: pf.alg = stats<br/>pf.algStartTime = startTime<br/>pf.algEndTime = timestamp<br/>pf.hasAlgTime = true
+
+    ALG->>DISP: send processed frame(frameId)
+
+    DISP->>AGG: mergeDisplay(frameId, DisplayStats)
+    AGG-->>AGG: pf.disp = stats<br/>pf.hasDisp = true
+
+    AGG-->>AGG: if (pf.hasAlgTime) {<br/>  pf.soc = integrateSoCInWindow(T_alg_start, T_alg_end)<br/>  pf.power = integratePowerInWindow(T_alg_start, T_alg_end)<br/>  pf.hasSoC = pf.hasPower = true<br/>}
+
+    AGG-->>AGG: finalizeFrame(frameId)<br/>compute joulesPerFrame etc.
+    AGG->>AGG: append to CSV / JSON
+
+

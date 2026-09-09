@@ -1,0 +1,48 @@
+```mermaid
+classDiagram
+    class SystemModelingFactory {
+        - running : bool
+        - dataConcretes : vector<DataConcrete*>
+        - captureThreads : vector<thread>
+        + initializeSystem() : void
+        + stopSystem() : void
+        + captureLoop(DataConcrete*) : void
+    }
+
+    class DataConcrete {
+        + openDevice(path: string) : bool
+        + startStreaming() : bool
+        + stopStreaming() : bool
+        + dequeFrame(frame: FrameData&) : bool
+        + queueBuffer() : bool
+    }
+
+    class AlgorithmConcrete {
+        + setFrameQueue(queue: SharedQueue<FrameData>) : void
+        + startProcessing() : void
+        + stopProcessing() : void
+        - processLoop() : void
+    }
+
+    class SharedQueue~FrameData~ {
+        + push(FrameData) : void
+        + pop(FrameData&) : bool
+        + stop() : void
+    }
+
+    class FrameData {
+        <<struct>>
+        - data : void*
+        - length : size_t
+        - width : int
+        - height : int
+        - timestamp : long
+    }
+
+    SystemModelingFactory "1" --> "many" DataConcrete : manages
+    SystemModelingFactory "1" --> "many" AlgorithmConcrete : can manage
+    DataConcrete ..> FrameData : uses
+    AlgorithmConcrete ..> FrameData : processes
+    AlgorithmConcrete ..> SharedQueue : consumes from
+    SystemModelingFactory ..> SharedQueue : can provide 
+```

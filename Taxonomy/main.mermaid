@@ -1,0 +1,108 @@
+graph TD
+    A[Application] -->|Initialize SoC, Algorithm, Camera| B[SoCConcrete]
+    A -->|Initialize SoC, Algorithm, Camera| C[AlgorithmConcrete]
+    A -->|Initialize SoC, Algorithm, Camera| D[DataConcrete]
+    A -->|Initialize SoC, Algorithm, Camera| E[SdlDisplayConcrete]
+    A -->|Create SystemCaptureFactory| F[SystemCaptureFactory]
+    A -->|Create SystemProfilingConcrete| G[SystemProfilingConcrete]
+    A -->|Create SystemProfilingFactory| H[SystemProfilingFactory]
+    A -->|Start Profiling| H
+    A -->|Start Camera Capture| F
+    A -->|Pause System| F
+    A -->|Resume System| F
+    A -->|Stop Capture, Display & Profiling| F
+    A -->|Stop Capture, Display & Profiling| H
+    A -->|Stop Capture, Display & Profiling| E
+    A -->|Test Using ConcreteComponentFactory| I[ConcreteComponentFactory]
+    A -->|Start Display| F
+
+    classDiagram
+    class Application {
+        +void displayMenu()
+        +int main()
+    }
+
+    class SoCConcrete {
+        +void initializeSoC()
+        +std::string getSpecs()
+        +void stopSoC()
+        +bool configure(const SoCConfig& config)
+        +void setErrorCallback(std::function<void(const std::string&)>)
+        +JetsonNanoInfo getPerformance() const
+    }
+
+    class AlgorithmConcrete {
+        +void configure(const AlgorithmConfig& config)
+    }
+
+    class DataConcrete {
+        +void configure(const CameraConfig& config)
+        +double getLastFPS() const
+        +int getQueueSize() const
+    }
+
+    class SdlDisplayConcrete {
+        +void configure(const DisplayConfig& config)
+        +void initializeDisplay(int width, int height)
+        +void closeDisplay()
+    }
+
+    class SystemCaptureFactory {
+        +SystemCaptureFactory(std::shared_ptr<ISoC> soc, std::shared_ptr<IAlgorithm> algo, std::shared_ptr<IData> camera)
+        +void initializeCapture(const CameraConfig& camConfig, const AlgorithmConfig& algConfig)
+        +void pauseAll()
+        +void resumeAll()
+        +void stopCapture()
+        +void setGlobalErrorCallback(std::function<void(const std::string&)>)
+        +void setDisplay(std::shared_ptr<SdlDisplayConcrete> display)
+    }
+
+    class SystemProfilingConcrete {
+        +SystemProfilingConcrete(SystemCaptureFactory& captureFactory)
+    }
+
+    class SystemProfilingFactory {
+        +SystemProfilingFactory(SystemProfilingConcrete& profilingConcrete, int interval)
+        +void startProfiling(const std::string& csvPath)
+        +void stopProfiling()
+    }
+
+    class ConcreteComponentFactory {
+        +void startSystem(const CameraConfig& camConfig, const AlgorithmConfig& algConfig, const std::string& csvPath)
+        +void stopSystem()
+    }
+
+    Application --> SoCConcrete
+    Application --> AlgorithmConcrete
+    Application --> DataConcrete
+    Application --> SdlDisplayConcrete
+    Application --> SystemCaptureFactory
+    Application --> SystemProfilingConcrete
+    Application --> SystemProfilingFactory
+    Application --> ConcreteComponentFactory
+
+    sequenceDiagram
+    participant Application
+    participant SoCConcrete
+    participant AlgorithmConcrete
+    participant DataConcrete
+    participant SdlDisplayConcrete
+    participant SystemCaptureFactory
+    participant SystemProfilingConcrete
+    participant SystemProfilingFactory
+    participant ConcreteComponentFactory
+
+    Application ->> SoCConcrete: configure(socCfg)
+    Application ->> DataConcrete: configure(camCfg)
+    Application ->> AlgorithmConcrete: configure(algCfg)
+    Application ->> SdlDisplayConcrete: configure(dispCfg)
+    Application ->> SdlDisplayConcrete: initializeDisplay(640, 480)
+    Application ->> SystemCaptureFactory: initializeCapture(camCfg, algCfg)
+    Application ->> SystemProfilingFactory: startProfiling("PerformanceMetrics_01.csv")
+    Application ->> SystemCaptureFactory: pauseAll()
+    Application ->> SystemCaptureFactory: resumeAll()
+    Application ->> SystemProfilingFactory: stopProfiling()
+    Application ->> SystemCaptureFactory: stopCapture()
+    Application ->> SdlDisplayConcrete: closeDisplay()
+    Application ->> ConcreteComponentFactory: startSystem(camCfg, algCfg, "AutoRun_Metrics.csv")
+    Application ->> ConcreteComponentFactory: stopSystem()

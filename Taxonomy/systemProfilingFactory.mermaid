@@ -1,0 +1,45 @@
+classDiagram
+    class SystemProfilingFactory {
+        -std::shared_ptr<ISystemProfiling> metricsSource_
+        -std::thread profilingThread_
+        -std::atomic<bool> profilingActive_
+        -std::mutex metricsMutex_
+        +SystemProfilingFactory(std::shared_ptr<ISystemProfiling> metricsSource)
+        +~SystemProfilingFactory()
+        +void startProfiling()
+        +void stopProfiling()
+        +void profilingLoop()
+        +std::tuple<double, int> getCameraMetrics(int cameraIndex) const
+    }
+
+    sequenceDiagram
+    participant Application
+    participant SystemProfilingFactory
+    participant ISystemProfiling
+
+    Application ->> SystemProfilingFactory: startProfiling()
+    SystemProfilingFactory ->> SystemProfilingFactory: profilingActive_ = true
+    SystemProfilingFactory ->> SystemProfilingFactory: profilingThread_ = std::thread(&SystemProfilingFactory::profilingLoop, this)
+
+    loop Profiling Loop
+        SystemProfilingFactory ->> ISystemProfiling: getSoCMetrics()
+        ISystemProfiling -->> SystemProfilingFactory: JetsonNanoInfo
+        SystemProfilingFactory ->> SystemProfilingFactory: Log SoC Metrics
+        SystemProfilingFactory ->> ISystemProfiling: getCameraMetrics(cameraIndex)
+        ISystemProfiling -->> SystemProfilingFactory: std::tuple<double, int>
+        SystemProfilingFactory ->> SystemProfilingFactory: Log Camera Metrics
+    end
+
+    Application ->> SystemProfilingFactory: stopProfiling()
+    SystemProfilingFactory ->> SystemProfilingFactory: profilingActive_ = false
+    SystemProfilingFactory ->> SystemProfilingFactory: profilingThread_.join()
+
+    graph TD
+    A[Application] -->|Start Profiling| B(SystemProfilingFactory)
+    B -->|Get SoC Metrics| C(ISystemProfiling)
+    C -->|Return SoC Metrics| B
+    B -->|Log SoC Metrics| D[Log System]
+    B -->|Get Camera Metrics| E(ISystemProfiling)
+    E -->|Return Camera Metrics| B
+    B -->|Log Camera Metrics| D
+    A -->|Stop Profiling| B

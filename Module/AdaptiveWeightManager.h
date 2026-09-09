@@ -1,0 +1,2783 @@
+// ============================================================
+// AdaptiveWeightManager.h
+// PhD Priority 2: Context-Sensitive Meta-Controller for
+// Scalarisation Weights in Online Multi-Objective GA
+// ============================================================
+// REVISION: Jetson Nano-calibrated thresholds (2026-06-30)
+//
+// Change summary vs original:
+//
+//   Config defaults lowered to match real Jetson Nano operating range
+//   observed in ERL vs baseline experiments (tegrastats analysis):
+//
+//
+
+//Field              Original   Revised_1     Revised_2   Rationale
+//     ---------------------------------------------------------
+//     thermal_warn_cpu_c      75.0       57.0       45.0      Baselines run 45-65°C;
+//     thermal_warn_gpu_c      78.0       57.0       45.0      orig threshold never fired
+//     thermal_crit_cpu_c      80.0       63.0       55.0      ERL runs 39-45°C (NORMAL)
+//     thermal_crit_gpu_c      83.0       63.0       55.0      baselines reach WARNING
+//     battery_critical_watts   8.0        3.5       7.5      Jetson Nano 7.5W mode ceiling
+//     latency_sla_ms          45.0       30.0       30.0      tighter SLA for embedded use
+//     fps_underperform_ratio   0.70       0.70      unchanged
+//     transition_smoothing     0.30       0.30      unchanged
+//     update_interval_gens     5          5         unchanged
+
+//   classifyRegime() now logs the triggering metric on regime change to aid
+//   thesis evidence export and debugging.
+//
+//   Config::original() factory added ? restores pre-revision defaults for
+//   A/B comparison in ablation studies without recompilation.
+//
+//   exportHistoryCSV() extended with a "trigger_value" column for the
+//   metric that caused each regime transition.
+//
+// PhD rationale:
+//   With original thresholds, THERMAL_WARNING and THERMAL_CRITICAL never
+//   activated (all runs < 68°C peak). The weight vector was therefore fixed
+//   at NOMINAL={0.50,0.20,0.20,0.10} throughout every experiment.
+//   With revised thresholds, baselines (61-65°C CPU) enter THERMAL_WARNING
+//   ? weights shift to {0.35,0.15,0.40,0.10}, increasing temperature penalty.
+//   ERL runs (39-45°C) remain in NOMINAL. This differential is detectable by
+//   calculateScalarizedFitness() and gives the Pareto front a live thermal
+//   gradient to optimize against ? exactly what the PhD hypothesis requires.
+// ============================================================
+
+#pragma once
+
+#include <array>
+#include <deque>
+#include <string>
+#include <vector>
+#include <spdlog/spdlog.h>
+#include "RuntimeControls.h"   // for MetricsSnapshot
+#include "PowerSanity.h"       // [P0-F15] physical-plausibility gate for power
+
+namespace hrl {
+
+// ============================================================
+// System Regime Classification
+// ============================================================
+enum class SystemRegime {
+    NOMINAL,           // Normal operation
+    BATTERY_CRITICAL,  // Power severely constrained
+    THERMAL_WARNING,   // Approaching thermal limits
+    THERMAL_CRITICAL,  // Emergency thermal state
+    LATENCY_SLA,       // Latency SLA violation
+    HIGH_PERFORMANCE   // Need to push FPS
+};
+
+// ============================================================
+// Weight Profile per regime
+// ============================================================
+struct WeightProfile {
+    double w_fps;
+    double w_power;
+    double w_temp;
+    double w_latency;
+    std::string name;
+};
+
+// ============================================================
+// AdaptiveWeightManager
+// ============================================================
+class AdaptiveWeightManager {
+public:
+    // --------------------------------------------------------
+    // Configuration ? Jetson Nano calibrated defaults
+    // --------------------------------------------------------
+    struct Config {
+        int    update_interval_gens;
+        double battery_critical_watts;
+        double thermal_warn_cpu_c;
+        double thermal_warn_gpu_c;
+        double thermal_crit_cpu_c;
+        double thermal_crit_gpu_c;
+        double latency_sla_ms;
+        double fps_underperform_ratio;
+        double transition_smoothing;
+
+        // Revised defaults ? aligned to ThermalGovernor::Config Jetson Nano thresholds.
+        // CAUTION fires at 55°C; AWM THERMAL_WARNING fires at thermal_warn_cpu_c=57°C
+        // so the two systems escalate in the same temperature band.
+        // Config() :
+        //     update_interval_gens(5),
+        //     battery_critical_watts(7.5),   // Jetson Nano 5W mode ceiling (was 8.0)
+        //     thermal_warn_cpu_c(45.0),      // Was 75.0 ? baselines hit this at load
+        //     thermal_warn_gpu_c(45.0),      // Was 78.0
+        //     thermal_crit_cpu_c(55.0),      // Was 80.0 ? above WARNING, below TG::WARNING
+        //     thermal_crit_gpu_c(55.0),      // Was 83.0
+        //     latency_sla_ms(30.0),          // Was 45.0 ? tighter for embedded pipeline
+        //     fps_underperform_ratio(0.70),  // Unchanged
+        //     transition_smoothing(0.30)     // Unchanged ? EMA alpha
+        // {}
+        // Replace the Config() initializer in AdaptiveWeightManager::Config
+        Config() :
+            update_interval_gens(5),
+            battery_critical_watts(7.5),   // experiment: 7.5 W (or 8.0 W for control)
+            thermal_warn_cpu_c(45.0),      // experiment: warning onset 45°C
+            thermal_warn_gpu_c(45.0),      // symmetric GPU warning
+            thermal_crit_cpu_c(55.0),      // experiment: critical 55°C
+            thermal_crit_gpu_c(55.0),      // symmetric GPU critical
+            latency_sla_ms(30.0),       // experiment: tighter SLA for embedded pipeline
+            fps_underperform_ratio(0.70), 
+            transition_smoothing(0.30)
+        {}
+
+        // Factory: restores original (pre-revision) defaults for ablation studies.
+        // Use this to run a control experiment with inactive thermal regimes.
+        static Config original() {
+            Config c;
+            c.battery_critical_watts = 8.0;
+            c.thermal_warn_cpu_c     = 75.0;
+            c.thermal_warn_gpu_c     = 78.0;
+            c.thermal_crit_cpu_c     = 80.0;
+            c.thermal_crit_gpu_c     = 83.0;
+            c.latency_sla_ms         = 45.0;
+            return c;
+        }
+    };
+
+    // --------------------------------------------------------
+    // Weight history entry (for thesis plots)
+    // Extended: trigger_value records the metric that caused the regime change.
+    // --------------------------------------------------------
+    struct WeightHistoryEntry {
+        int generation = -1;
+        SystemRegime regime = SystemRegime::NOMINAL;          // committed regime
+        SystemRegime detected_regime = SystemRegime::NOMINAL; // raw classifier result
+        std::array<double, 4> weights{{0.50, 0.20, 0.20, 0.10}};
+        double trigger_value = 0.0;
+        double trigger_threshold = 0.0;
+        std::string trigger_field;
+        int regime_streak = 0;
+    };
+
+    // --------------------------------------------------------
+    // Constructor
+    // --------------------------------------------------------
+    //explicit AdaptiveWeightManager(Config cfg = Config())
+    explicit AdaptiveWeightManager(Config cfg = {}) // FIX: Use brace initialization
+        : cfg_(cfg)
+    {
+        current_weights_ = getProfileWeights(SystemRegime::NOMINAL);
+        target_weights_  = current_weights_;
+
+        spdlog::info("[AdaptiveWeightManager] Initialized "
+                     "(thermal_warn={:.0f}°C, thermal_crit={:.0f}°C, "
+                     "battery_crit={:.1f}W, latency_sla={:.0f}ms)",
+                     cfg_.thermal_warn_cpu_c, cfg_.thermal_crit_cpu_c,
+                     cfg_.battery_critical_watts, cfg_.latency_sla_ms);
+    }
+
+    // --------------------------------------------------------
+    // Main update ? call every GA generation.
+    // Returns true if the regime changed this tick.
+    // --------------------------------------------------------
+    bool update(const MetricsSnapshot& snap, int current_generation, double target_fps) {
+        if (cfg_.update_interval_gens <= 0) return false; // ADD THIS CHECK
+        if (current_generation % cfg_.update_interval_gens != 0) {
+            return false;
+        }
+
+        double trigger_val = 0.0;
+        double trigger_threshold = 0.0;
+        std::string trigger_field;
+
+        // SystemRegime new_regime = force_regime_
+        //     ? forced_regime_
+        //     : classifyRegime(snap, target_fps, trigger_val, trigger_field);
+
+        // bool changed = (new_regime != current_regime_);
+
+        // if (changed) {
+        //     spdlog::info("[AdaptiveWeightManager] Regime transition: {} -> {} "
+        //                  "(gen={}, {}={:.2f})",
+        //                  regimeToString(current_regime_),
+        //                  regimeToString(new_regime),
+        //                  current_generation,
+        //                  trigger_field, trigger_val);
+        //     current_regime_ = new_regime;
+        // }
+
+        //With this debounce-aware logic:
+
+        SystemRegime detected = force_regime_ ? forced_regime_
+                                     : classifyRegime(snap, target_fps, trigger_val,
+                                                      trigger_threshold, trigger_field);
+
+        // Persist the exact classifier evidence used on this AWM update tick so
+        // every subsequent GA generation can log the same authoritative state.
+        last_update_generation_ = current_generation;
+        last_trigger_value_ = trigger_val;
+        last_trigger_threshold_ = trigger_threshold;
+        last_trigger_field_ = trigger_field;
+
+        // If detection differs from last_detected_regime_, reset streak
+        if (detected != last_detected_regime_) {
+            last_detected_regime_ = detected;
+            regime_streak_ = 1;
+        } else {
+            if (regime_streak_ < REGIME_STREAK_REQUIRED) ++regime_streak_;
+        }
+
+        // Commit only when streak requirement met
+        bool changed = false;
+        if (regime_streak_ >= REGIME_STREAK_REQUIRED && detected != current_regime_) {
+            spdlog::info("[AdaptiveWeightManager] Regime transition: {} -> {} (gen={}, {}={:.2f})",
+                        regimeToString(current_regime_),
+                        regimeToString(detected),
+                        current_generation,
+                        trigger_field, trigger_val);
+            current_regime_ = detected;
+            changed = true;
+        }
+
+
+        target_weights_ = getProfileWeights(current_regime_);
+        smoothTransition();
+
+        WeightHistoryEntry entry;
+        entry.generation = current_generation;
+        entry.regime = current_regime_;
+        entry.detected_regime = detected;
+        entry.weights = current_weights_;
+        entry.trigger_value = trigger_val;
+        entry.trigger_threshold = trigger_threshold;
+        entry.trigger_field = trigger_field;
+        entry.regime_streak = regime_streak_;
+        weight_history_.push_back(entry);
+        if (weight_history_.size() > MAX_HISTORY) {
+            weight_history_.pop_front();
+        }
+
+        return changed;
+    }
+
+    // --------------------------------------------------------
+    // Accessors
+    // --------------------------------------------------------
+    std::array<double, 4> getWeights() const { return current_weights_; }
+    SystemRegime getCurrentRegime() const { return current_regime_; }
+    SystemRegime getLastDetectedRegime() const { return last_detected_regime_; }
+    std::string getCurrentRegimeName() const { return regimeToString(current_regime_); }
+    std::string getLastDetectedRegimeName() const { return regimeToString(last_detected_regime_); }
+    const std::deque<WeightHistoryEntry>& getWeightHistory() const { return weight_history_; }
+    const Config& getConfig() const { return cfg_; }
+    int getLastUpdateGeneration() const { return last_update_generation_; }
+    int getRegimeStreak() const { return regime_streak_; }
+    double getLastTriggerValue() const { return last_trigger_value_; }
+    double getLastTriggerThreshold() const { return last_trigger_threshold_; }
+    const std::string& getLastTriggerField() const { return last_trigger_field_; }
+
+    // --------------------------------------------------------
+    // Forced regime control (for ablation studies)
+    // --------------------------------------------------------
+    void forceRegime(SystemRegime regime) {
+        force_regime_  = true;
+        forced_regime_ = regime;
+        spdlog::info("[AdaptiveWeightManager] Regime FORCED to {}", regimeToString(regime));
+    }
+
+    void clearForceRegime() {
+        force_regime_ = false;
+        spdlog::info("[AdaptiveWeightManager] Forced regime cleared ? resuming auto detection");
+    }
+
+    // // --------------------------------------------------------
+    // // CSV export for thesis (Figure 6.x: weight evolution).
+    // // Extended with trigger_field and trigger_value columns.
+    // // --------------------------------------------------------
+    // std::string exportHistoryCSV() const {
+    //     std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency,"
+    //                       "trigger_field,trigger_value,trigger_units\n";
+    //     for (const auto& e : weight_history_) {
+    //         csv += std::to_string(e.generation)    + ","
+    //              + regimeToString(e.regime)         + ","
+    //              + std::to_string(e.weights[0])     + ","
+    //              + std::to_string(e.weights[1])     + ","
+    //              + std::to_string(e.weights[2])     + ","
+    //              + std::to_string(e.weights[3])     + ","
+    //              + e.trigger_field                  + ","
+    //              + std::to_string(e.trigger_value)  + "\n";
+    //     }
+    //     return csv;
+    // }
+    // CSV export for thesis (Figure 6.x: weight evolution).
+    // Columns: generation,regime,w_fps,w_power,w_temp,w_latency,trigger_field,trigger_value,trigger_units
+    std::string exportHistoryCSV() const {
+        std::string csv = "generation,regime,detected_regime,w_fps,w_power,w_temp,w_latency,"
+                          "trigger_field,trigger_value,trigger_threshold,regime_streak,trigger_units\n";
+        for (const auto& e : weight_history_) {
+            // Determine units for the trigger field
+            std::string units = "NA";
+            if (e.trigger_field == "avg_power_w_alg" || e.trigger_field == "avg_power_w") units = "W";
+            else if (e.trigger_field == "joulesPerFrame" || e.trigger_field == "joules_per_frame") units = "J";
+            else if (e.trigger_field == "cpu_temp_c" || e.trigger_field == "gpu_temp_c") units = "C";
+            else if (e.trigger_field == "avg_latency_ms" || e.trigger_field == "end_to_end_latency_ms") units = "ms";
+            else if (e.trigger_field == "fps") units = "fps";
+
+            // Escape trigger_field if it contains commas or quotes
+            std::string field = e.trigger_field;
+            bool needQuotes = field.find(',') != std::string::npos || field.find('"') != std::string::npos;
+            if (field.find('"') != std::string::npos) {
+                // double any internal quotes per CSV quoting rules
+                std::string tmp;
+                tmp.reserve(field.size() * 2);
+                for (char c : field) {
+                    if (c == '"') tmp.push_back('"');
+                    tmp.push_back(c);
+                }
+                field.swap(tmp);
+                needQuotes = true;
+            }
+            if (needQuotes) {
+                field = "\"" + field + "\"";
+            }
+
+            // Compose row (one line per entry)
+            csv += std::to_string(e.generation) + ","
+                + regimeToString(e.regime) + ","
+                + regimeToString(e.detected_regime) + ","
+                + std::to_string(e.weights[0]) + ","
+                + std::to_string(e.weights[1]) + ","
+                + std::to_string(e.weights[2]) + ","
+                + std::to_string(e.weights[3]) + ","
+                + field + ","
+                + std::to_string(e.trigger_value) + ","
+                + std::to_string(e.trigger_threshold) + ","
+                + std::to_string(e.regime_streak) + ","
+                + units + "\n";
+        }
+        return csv;
+    }
+
+
+private:
+    Config cfg_;
+    SystemRegime current_regime_ = SystemRegime::NOMINAL;
+    std::array<double, 4> current_weights_ = {0.50, 0.20, 0.20, 0.10};
+    std::array<double, 4> target_weights_  = {0.50, 0.20, 0.20, 0.10};
+
+    /*
+    Add a small debounce (require N consecutive detections)
+    Why: low thresholds can cause chattering; require 2 consecutive detection ticks before committing a regime change.
+    Add these private members (near other state):
+    */
+    // Debounce state for regime transitions
+    SystemRegime last_detected_regime_ = SystemRegime::NOMINAL;
+    int regime_streak_ = 0;
+    enum { REGIME_STREAK_REQUIRED = 2 }; // require 2 consecutive detections
+
+    // Last classifier evidence used by the authoritative AWM instance.
+    int last_update_generation_ = -1;
+    double last_trigger_value_ = 0.0;
+    double last_trigger_threshold_ = 0.0;
+    std::string last_trigger_field_ = "none";
+
+
+    bool force_regime_          = false;
+    SystemRegime forced_regime_ = SystemRegime::NOMINAL;
+
+    std::deque<WeightHistoryEntry> weight_history_;
+    static constexpr size_t MAX_HISTORY = 500;   // Extended: 100 ? 500 for full 30-min run
+
+    // --------------------------------------------------------
+    // Regime classification.
+    // Priority order is intentional: thermal safety first, then power,
+    // then latency SLA, then performance deficit.
+    // trigger_val / trigger_field are filled for logging and CSV export.
+    // --------------------------------------------------------
+    SystemRegime classifyRegime(const MetricsSnapshot& snap,
+                                double target_fps,
+                                double& trigger_val,
+                                double& trigger_threshold,
+                                std::string& trigger_field) const {
+        // 1. Thermal critical ? highest priority
+        if (snap.cpu_temp_c > cfg_.thermal_crit_cpu_c) {
+            trigger_val   = snap.cpu_temp_c;
+            trigger_threshold = cfg_.thermal_crit_cpu_c;
+            trigger_field = "cpu_temp_c";
+            return SystemRegime::THERMAL_CRITICAL;
+        }
+        if (snap.gpu_temp_c > cfg_.thermal_crit_gpu_c) {
+            trigger_val   = snap.gpu_temp_c;
+            trigger_threshold = cfg_.thermal_crit_gpu_c;
+            trigger_field = "gpu_temp_c";
+            return SystemRegime::THERMAL_CRITICAL;
+        }
+
+        // 2. Battery / power critical
+        // [P0-F15] Only a physically plausible measurement may drive a
+        // BATTERY_CRITICAL transition. This is the exact failure of the
+        // 2026-07-11 run: bogus 22.22/40.09/57.49W readings on a 10W board
+        // flipped the whole weight regime. A closed-loop controller must
+        // never transition on an input that violates physics.
+        if (PowerSanity::valid(snap.avg_power_w_alg) &&
+            snap.avg_power_w_alg > cfg_.battery_critical_watts) {
+            trigger_val   = snap.avg_power_w_alg;
+            trigger_threshold = cfg_.battery_critical_watts;
+            trigger_field = "avg_power_w_alg";
+            return SystemRegime::BATTERY_CRITICAL;
+        }
+
+        // 3. Thermal warning
+        if (snap.cpu_temp_c > cfg_.thermal_warn_cpu_c) {
+            trigger_val   = snap.cpu_temp_c;
+            trigger_threshold = cfg_.thermal_warn_cpu_c;
+            trigger_field = "cpu_temp_c";
+            return SystemRegime::THERMAL_WARNING;
+        }
+        if (snap.gpu_temp_c > cfg_.thermal_warn_gpu_c) {
+            trigger_val   = snap.gpu_temp_c;
+            trigger_threshold = cfg_.thermal_warn_gpu_c;
+            trigger_field = "gpu_temp_c";
+            return SystemRegime::THERMAL_WARNING;
+        }
+
+        // 4. Latency SLA breach
+        if (snap.avg_latency_ms > cfg_.latency_sla_ms) {
+            trigger_val   = snap.avg_latency_ms;
+            trigger_threshold = cfg_.latency_sla_ms;
+            trigger_field = "avg_latency_ms";
+            return SystemRegime::LATENCY_SLA;
+        }
+
+        // 5. FPS underperformance
+        if (target_fps > 0.0 && snap.fps < cfg_.fps_underperform_ratio * target_fps) {
+            trigger_val   = snap.fps;
+            trigger_threshold = cfg_.fps_underperform_ratio * target_fps;
+            trigger_field = "fps";
+            return SystemRegime::HIGH_PERFORMANCE;
+        }
+
+        trigger_val   = snap.cpu_temp_c;
+        trigger_threshold = cfg_.thermal_warn_cpu_c;
+        trigger_field = "cpu_temp_c";
+        return SystemRegime::NOMINAL;
+    }
+
+    // --------------------------------------------------------
+    // Weight profiles ? unchanged from original.
+    // Profiles are the research contribution; thresholds above
+    // are calibration parameters.
+    // --------------------------------------------------------
+    std::array<double, 4> getProfileWeights(SystemRegime regime) const {
+        switch (regime) {
+            case SystemRegime::BATTERY_CRITICAL:  return {0.25, 0.50, 0.15, 0.10};
+            case SystemRegime::THERMAL_WARNING:   return {0.35, 0.15, 0.40, 0.10};
+            case SystemRegime::THERMAL_CRITICAL:  return {0.20, 0.10, 0.60, 0.10};
+            case SystemRegime::LATENCY_SLA:       return {0.30, 0.15, 0.15, 0.40};
+            case SystemRegime::HIGH_PERFORMANCE:  return {0.65, 0.15, 0.15, 0.05};
+            case SystemRegime::NOMINAL:
+            default:                              return {0.50, 0.20, 0.20, 0.10};
+        }
+    }
+
+    // EMA smoothing ? prevents abrupt weight jumps between generations
+    void smoothTransition() {
+        for (int i = 0; i < 4; ++i) {
+            current_weights_[i] = (1.0 - cfg_.transition_smoothing) * current_weights_[i]
+                                + cfg_.transition_smoothing * target_weights_[i];
+        }
+        // Re-normalise to guard against floating-point drift
+        double sum = 0.0;
+        for (double w : current_weights_) sum += w;
+        if (sum > 0.0) {
+            for (auto& w : current_weights_) w /= sum;
+        }
+    }
+
+    static std::string regimeToString(SystemRegime r) {
+        switch (r) {
+            case SystemRegime::NOMINAL:           return "NOMINAL";
+            case SystemRegime::BATTERY_CRITICAL:  return "BATTERY_CRITICAL";
+            case SystemRegime::THERMAL_WARNING:   return "THERMAL_WARNING";
+            case SystemRegime::THERMAL_CRITICAL:  return "THERMAL_CRITICAL";
+            case SystemRegime::LATENCY_SLA:       return "LATENCY_SLA";
+            case SystemRegime::HIGH_PERFORMANCE:  return "HIGH_PERFORMANCE";
+            default:                              return "UNKNOWN";
+        }
+    }
+};
+
+} // namespace hrl
+
+
+// // ============================================================
+// // AdaptiveWeightManager.h
+// // PhD Priority 2: Context-Sensitive Meta-Controller for
+// // Scalarisation Weights in Online Multi-Objective GA
+// // ============================================================
+// // REVISION: Jetson Nano-calibrated thresholds (2026-06-30)
+// //
+// // Change summary vs original:
+// //
+// //   Config defaults lowered to match real Jetson Nano operating range
+// //   observed in ERL vs baseline experiments (tegrastats analysis):
+// //
+// //
+
+// //Field              Original   Revised_1     Revised_2   Rationale
+// //     ---------------------------------------------------------
+// //     thermal_warn_cpu_c      75.0       57.0       45.0      Baselines run 45-65°C;
+// //     thermal_warn_gpu_c      78.0       57.0       45.0      orig threshold never fired
+// //     thermal_crit_cpu_c      80.0       63.0       55.0      ERL runs 39-45°C (NORMAL)
+// //     thermal_crit_gpu_c      83.0       63.0       55.0      baselines reach WARNING
+// //     battery_critical_watts   8.0        3.5       7.5      Jetson Nano 7.5W mode ceiling
+// //     latency_sla_ms          45.0       30.0       30.0      tighter SLA for embedded use
+// //     fps_underperform_ratio   0.70       0.70      unchanged
+// //     transition_smoothing     0.30       0.30      unchanged
+// //     update_interval_gens     5          5         unchanged
+
+// //   classifyRegime() now logs the triggering metric on regime change to aid
+// //   thesis evidence export and debugging.
+// //
+// //   Config::original() factory added ? restores pre-revision defaults for
+// //   A/B comparison in ablation studies without recompilation.
+// //
+// //   exportHistoryCSV() extended with a "trigger_value" column for the
+// //   metric that caused each regime transition.
+// //
+// // PhD rationale:
+// //   With original thresholds, THERMAL_WARNING and THERMAL_CRITICAL never
+// //   activated (all runs < 68°C peak). The weight vector was therefore fixed
+// //   at NOMINAL={0.50,0.20,0.20,0.10} throughout every experiment.
+// //   With revised thresholds, baselines (61-65°C CPU) enter THERMAL_WARNING
+// //   ? weights shift to {0.35,0.15,0.40,0.10}, increasing temperature penalty.
+// //   ERL runs (39-45°C) remain in NOMINAL. This differential is detectable by
+// //   calculateScalarizedFitness() and gives the Pareto front a live thermal
+// //   gradient to optimize against ? exactly what the PhD hypothesis requires.
+// // ============================================================
+
+// #pragma once
+
+// #include <array>
+// #include <deque>
+// #include <string>
+// #include <vector>
+// #include <spdlog/spdlog.h>
+// #include "RuntimeControls.h"   // for MetricsSnapshot
+// #include "PowerSanity.h"       // [P0-F15] physical-plausibility gate for power
+
+// namespace hrl {
+
+// // ============================================================
+// // System Regime Classification
+// // ============================================================
+// enum class SystemRegime {
+//     NOMINAL,           // Normal operation
+//     BATTERY_CRITICAL,  // Power severely constrained
+//     THERMAL_WARNING,   // Approaching thermal limits
+//     THERMAL_CRITICAL,  // Emergency thermal state
+//     LATENCY_SLA,       // Latency SLA violation
+//     HIGH_PERFORMANCE   // Need to push FPS
+// };
+
+// // ============================================================
+// // Weight Profile per regime
+// // ============================================================
+// struct WeightProfile {
+//     double w_fps;
+//     double w_power;
+//     double w_temp;
+//     double w_latency;
+//     std::string name;
+// };
+
+// // ============================================================
+// // AdaptiveWeightManager
+// // ============================================================
+// class AdaptiveWeightManager {
+// public:
+//     // --------------------------------------------------------
+//     // Configuration ? Jetson Nano calibrated defaults
+//     // --------------------------------------------------------
+//     struct Config {
+//         int    update_interval_gens;
+//         double battery_critical_watts;
+//         double thermal_warn_cpu_c;
+//         double thermal_warn_gpu_c;
+//         double thermal_crit_cpu_c;
+//         double thermal_crit_gpu_c;
+//         double latency_sla_ms;
+//         double fps_underperform_ratio;
+//         double transition_smoothing;
+
+//         // Revised defaults ? aligned to ThermalGovernor::Config Jetson Nano thresholds.
+//         // CAUTION fires at 55°C; AWM THERMAL_WARNING fires at thermal_warn_cpu_c=57°C
+//         // so the two systems escalate in the same temperature band.
+//         // Config() :
+//         //     update_interval_gens(5),
+//         //     battery_critical_watts(7.5),   // Jetson Nano 5W mode ceiling (was 8.0)
+//         //     thermal_warn_cpu_c(45.0),      // Was 75.0 ? baselines hit this at load
+//         //     thermal_warn_gpu_c(45.0),      // Was 78.0
+//         //     thermal_crit_cpu_c(55.0),      // Was 80.0 ? above WARNING, below TG::WARNING
+//         //     thermal_crit_gpu_c(55.0),      // Was 83.0
+//         //     latency_sla_ms(30.0),          // Was 45.0 ? tighter for embedded pipeline
+//         //     fps_underperform_ratio(0.70),  // Unchanged
+//         //     transition_smoothing(0.30)     // Unchanged ? EMA alpha
+//         // {}
+//         // Replace the Config() initializer in AdaptiveWeightManager::Config
+//         Config() :
+//             update_interval_gens(5),
+//             battery_critical_watts(7.5),   // experiment: 7.5 W (or 8.0 W for control)
+//             thermal_warn_cpu_c(45.0),      // experiment: warning onset 45°C
+//             thermal_warn_gpu_c(45.0),      // symmetric GPU warning
+//             thermal_crit_cpu_c(55.0),      // experiment: critical 55°C
+//             thermal_crit_gpu_c(55.0),      // symmetric GPU critical
+//             latency_sla_ms(30.0),       // experiment: tighter SLA for embedded pipeline
+//             fps_underperform_ratio(0.70), 
+//             transition_smoothing(0.30)
+//         {}
+
+//         // Factory: restores original (pre-revision) defaults for ablation studies.
+//         // Use this to run a control experiment with inactive thermal regimes.
+//         static Config original() {
+//             Config c;
+//             c.battery_critical_watts = 8.0;
+//             c.thermal_warn_cpu_c     = 75.0;
+//             c.thermal_warn_gpu_c     = 78.0;
+//             c.thermal_crit_cpu_c     = 80.0;
+//             c.thermal_crit_gpu_c     = 83.0;
+//             c.latency_sla_ms         = 45.0;
+//             return c;
+//         }
+//     };
+
+//     // --------------------------------------------------------
+//     // Weight history entry (for thesis plots)
+//     // Extended: trigger_value records the metric that caused the regime change.
+//     // --------------------------------------------------------
+//     struct WeightHistoryEntry {
+//         int generation;
+//         SystemRegime regime;
+//         std::array<double, 4> weights;   // [fps, power, temp, latency]
+//         double trigger_value = 0.0;      // The metric reading that caused this entry
+//         std::string trigger_field;       // e.g. "cpu_temp_c", "avg_power_w_alg"
+//     };
+
+//     // --------------------------------------------------------
+//     // Constructor
+//     // --------------------------------------------------------
+//     //explicit AdaptiveWeightManager(Config cfg = Config())
+//     explicit AdaptiveWeightManager(Config cfg = {}) // FIX: Use brace initialization
+//         : cfg_(cfg)
+//     {
+//         current_weights_ = getProfileWeights(SystemRegime::NOMINAL);
+//         target_weights_  = current_weights_;
+
+//         spdlog::info("[AdaptiveWeightManager] Initialized "
+//                      "(thermal_warn={:.0f}°C, thermal_crit={:.0f}°C, "
+//                      "battery_crit={:.1f}W, latency_sla={:.0f}ms)",
+//                      cfg_.thermal_warn_cpu_c, cfg_.thermal_crit_cpu_c,
+//                      cfg_.battery_critical_watts, cfg_.latency_sla_ms);
+//     }
+
+//     // --------------------------------------------------------
+//     // Main update ? call every GA generation.
+//     // Returns true if the regime changed this tick.
+//     // --------------------------------------------------------
+//     bool update(const MetricsSnapshot& snap, int current_generation, double target_fps) {
+//         if (cfg_.update_interval_gens <= 0) return false; // ADD THIS CHECK
+//         if (current_generation % cfg_.update_interval_gens != 0) {
+//             return false;
+//         }
+
+//         double trigger_val = 0.0;
+//         std::string trigger_field;
+
+//         // SystemRegime new_regime = force_regime_
+//         //     ? forced_regime_
+//         //     : classifyRegime(snap, target_fps, trigger_val, trigger_field);
+
+//         // bool changed = (new_regime != current_regime_);
+
+//         // if (changed) {
+//         //     spdlog::info("[AdaptiveWeightManager] Regime transition: {} -> {} "
+//         //                  "(gen={}, {}={:.2f})",
+//         //                  regimeToString(current_regime_),
+//         //                  regimeToString(new_regime),
+//         //                  current_generation,
+//         //                  trigger_field, trigger_val);
+//         //     current_regime_ = new_regime;
+//         // }
+
+//         //With this debounce-aware logic:
+
+//         SystemRegime detected = force_regime_ ? forced_regime_
+//                                      : classifyRegime(snap, target_fps, trigger_val, trigger_field);
+
+//         // If detection differs from last_detected_regime_, reset streak
+//         if (detected != last_detected_regime_) {
+//             last_detected_regime_ = detected;
+//             regime_streak_ = 1;
+//         } else {
+//             regime_streak_ = std::min(regime_streak_ + 1, REGIME_STREAK_REQUIRED);
+//         }
+
+//         // Commit only when streak requirement met
+//         bool changed = false;
+//         if (regime_streak_ >= REGIME_STREAK_REQUIRED && detected != current_regime_) {
+//             spdlog::info("[AdaptiveWeightManager] Regime transition: {} -> {} (gen={}, {}={:.2f})",
+//                         regimeToString(current_regime_),
+//                         regimeToString(detected),
+//                         current_generation,
+//                         trigger_field, trigger_val);
+//             current_regime_ = detected;
+//             changed = true;
+//         }
+
+
+//         target_weights_ = getProfileWeights(current_regime_);
+//         smoothTransition();
+
+//         weight_history_.push_back({
+//             current_generation,
+//             current_regime_,
+//             current_weights_,
+//             trigger_val,
+//             trigger_field
+//         });
+//         if (weight_history_.size() > MAX_HISTORY) {
+//             weight_history_.pop_front();
+//         }
+
+//         return changed;
+//     }
+
+//     // --------------------------------------------------------
+//     // Accessors
+//     // --------------------------------------------------------
+//     std::array<double, 4> getWeights() const { return current_weights_; }
+//     SystemRegime getCurrentRegime() const { return current_regime_; }
+//     std::string getCurrentRegimeName() const { return regimeToString(current_regime_); }
+//     const std::deque<WeightHistoryEntry>& getWeightHistory() const { return weight_history_; }
+//     const Config& getConfig() const { return cfg_; }
+
+//     // --------------------------------------------------------
+//     // Forced regime control (for ablation studies)
+//     // --------------------------------------------------------
+//     void forceRegime(SystemRegime regime) {
+//         force_regime_  = true;
+//         forced_regime_ = regime;
+//         spdlog::info("[AdaptiveWeightManager] Regime FORCED to {}", regimeToString(regime));
+//     }
+
+//     void clearForceRegime() {
+//         force_regime_ = false;
+//         spdlog::info("[AdaptiveWeightManager] Forced regime cleared ? resuming auto detection");
+//     }
+
+//     // // --------------------------------------------------------
+//     // // CSV export for thesis (Figure 6.x: weight evolution).
+//     // // Extended with trigger_field and trigger_value columns.
+//     // // --------------------------------------------------------
+//     // std::string exportHistoryCSV() const {
+//     //     std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency,"
+//     //                       "trigger_field,trigger_value,trigger_units\n";
+//     //     for (const auto& e : weight_history_) {
+//     //         csv += std::to_string(e.generation)    + ","
+//     //              + regimeToString(e.regime)         + ","
+//     //              + std::to_string(e.weights[0])     + ","
+//     //              + std::to_string(e.weights[1])     + ","
+//     //              + std::to_string(e.weights[2])     + ","
+//     //              + std::to_string(e.weights[3])     + ","
+//     //              + e.trigger_field                  + ","
+//     //              + std::to_string(e.trigger_value)  + "\n";
+//     //     }
+//     //     return csv;
+//     // }
+//     // CSV export for thesis (Figure 6.x: weight evolution).
+//     // Columns: generation,regime,w_fps,w_power,w_temp,w_latency,trigger_field,trigger_value,trigger_units
+//     std::string exportHistoryCSV() const {
+//         std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency,trigger_field,trigger_value,trigger_units\n";
+//         for (const auto& e : weight_history_) {
+//             // Determine units for the trigger field
+//             std::string units = "NA";
+//             if (e.trigger_field == "avg_power_w_alg" || e.trigger_field == "avg_power_w") units = "W";
+//             else if (e.trigger_field == "joulesPerFrame" || e.trigger_field == "joules_per_frame") units = "J";
+//             else if (e.trigger_field == "cpu_temp_c" || e.trigger_field == "gpu_temp_c") units = "C";
+//             else if (e.trigger_field == "avg_latency_ms" || e.trigger_field == "end_to_end_latency_ms") units = "ms";
+//             else if (e.trigger_field == "fps") units = "fps";
+
+//             // Escape trigger_field if it contains commas or quotes
+//             std::string field = e.trigger_field;
+//             bool needQuotes = field.find(',') != std::string::npos || field.find('"') != std::string::npos;
+//             if (field.find('"') != std::string::npos) {
+//                 // double any internal quotes per CSV quoting rules
+//                 std::string tmp;
+//                 tmp.reserve(field.size() * 2);
+//                 for (char c : field) {
+//                     if (c == '"') tmp.push_back('"');
+//                     tmp.push_back(c);
+//                 }
+//                 field.swap(tmp);
+//                 needQuotes = true;
+//             }
+//             if (needQuotes) {
+//                 field = "\"" + field + "\"";
+//             }
+
+//             // Compose row (one line per entry)
+//             csv += std::to_string(e.generation) + ","
+//                 + regimeToString(e.regime) + ","
+//                 + std::to_string(e.weights[0]) + ","
+//                 + std::to_string(e.weights[1]) + ","
+//                 + std::to_string(e.weights[2]) + ","
+//                 + std::to_string(e.weights[3]) + ","
+//                 + field + ","
+//                 + std::to_string(e.trigger_value) + ","
+//                 + units + "\n";
+//         }
+//         return csv;
+//     }
+
+
+// private:
+//     Config cfg_;
+//     SystemRegime current_regime_ = SystemRegime::NOMINAL;
+//     std::array<double, 4> current_weights_ = {0.50, 0.20, 0.20, 0.10};
+//     std::array<double, 4> target_weights_  = {0.50, 0.20, 0.20, 0.10};
+
+//     /*
+//     Add a small debounce (require N consecutive detections)
+//     Why: low thresholds can cause chattering; require 2 consecutive detection ticks before committing a regime change.
+//     Add these private members (near other state):
+//     */
+//     // Debounce state for regime transitions
+//     mutable SystemRegime last_detected_regime_ = SystemRegime::NOMINAL;
+//     mutable int regime_streak_ = 0;
+//     static constexpr int REGIME_STREAK_REQUIRED = 2; // require 2 consecutive detections
+
+
+//     bool force_regime_          = false;
+//     SystemRegime forced_regime_ = SystemRegime::NOMINAL;
+
+//     std::deque<WeightHistoryEntry> weight_history_;
+//     static constexpr size_t MAX_HISTORY = 500;   // Extended: 100 ? 500 for full 30-min run
+
+//     // --------------------------------------------------------
+//     // Regime classification.
+//     // Priority order is intentional: thermal safety first, then power,
+//     // then latency SLA, then performance deficit.
+//     // trigger_val / trigger_field are filled for logging and CSV export.
+//     // --------------------------------------------------------
+//     SystemRegime classifyRegime(const MetricsSnapshot& snap,
+//                                 double target_fps,
+//                                 double& trigger_val,
+//                                 std::string& trigger_field) const {
+//         // 1. Thermal critical ? highest priority
+//         if (snap.cpu_temp_c > cfg_.thermal_crit_cpu_c) {
+//             trigger_val   = snap.cpu_temp_c;
+//             trigger_field = "cpu_temp_c";
+//             return SystemRegime::THERMAL_CRITICAL;
+//         }
+//         if (snap.gpu_temp_c > cfg_.thermal_crit_gpu_c) {
+//             trigger_val   = snap.gpu_temp_c;
+//             trigger_field = "gpu_temp_c";
+//             return SystemRegime::THERMAL_CRITICAL;
+//         }
+
+//         // 2. Battery / power critical
+//         // [P0-F15] Only a physically plausible measurement may drive a
+//         // BATTERY_CRITICAL transition. This is the exact failure of the
+//         // 2026-07-11 run: bogus 22.22/40.09/57.49W readings on a 10W board
+//         // flipped the whole weight regime. A closed-loop controller must
+//         // never transition on an input that violates physics.
+//         if (PowerSanity::valid(snap.avg_power_w_alg) &&
+//             snap.avg_power_w_alg > cfg_.battery_critical_watts) {
+//             trigger_val   = snap.avg_power_w_alg;
+//             trigger_field = "avg_power_w_alg";
+//             return SystemRegime::BATTERY_CRITICAL;
+//         }
+
+//         // 3. Thermal warning
+//         if (snap.cpu_temp_c > cfg_.thermal_warn_cpu_c) {
+//             trigger_val   = snap.cpu_temp_c;
+//             trigger_field = "cpu_temp_c";
+//             return SystemRegime::THERMAL_WARNING;
+//         }
+//         if (snap.gpu_temp_c > cfg_.thermal_warn_gpu_c) {
+//             trigger_val   = snap.gpu_temp_c;
+//             trigger_field = "gpu_temp_c";
+//             return SystemRegime::THERMAL_WARNING;
+//         }
+
+//         // 4. Latency SLA breach
+//         if (snap.avg_latency_ms > cfg_.latency_sla_ms) {
+//             trigger_val   = snap.avg_latency_ms;
+//             trigger_field = "avg_latency_ms";
+//             return SystemRegime::LATENCY_SLA;
+//         }
+
+//         // 5. FPS underperformance
+//         if (target_fps > 0.0 && snap.fps < cfg_.fps_underperform_ratio * target_fps) {
+//             trigger_val   = snap.fps;
+//             trigger_field = "fps";
+//             return SystemRegime::HIGH_PERFORMANCE;
+//         }
+
+//         trigger_val   = snap.cpu_temp_c;
+//         trigger_field = "cpu_temp_c";
+//         return SystemRegime::NOMINAL;
+//     }
+
+//     // --------------------------------------------------------
+//     // Weight profiles ? unchanged from original.
+//     // Profiles are the research contribution; thresholds above
+//     // are calibration parameters.
+//     // --------------------------------------------------------
+//     std::array<double, 4> getProfileWeights(SystemRegime regime) const {
+//         switch (regime) {
+//             case SystemRegime::BATTERY_CRITICAL:  return {0.25, 0.50, 0.15, 0.10};
+//             case SystemRegime::THERMAL_WARNING:   return {0.35, 0.15, 0.40, 0.10};
+//             case SystemRegime::THERMAL_CRITICAL:  return {0.20, 0.10, 0.60, 0.10};
+//             case SystemRegime::LATENCY_SLA:       return {0.30, 0.15, 0.15, 0.40};
+//             case SystemRegime::HIGH_PERFORMANCE:  return {0.65, 0.15, 0.15, 0.05};
+//             case SystemRegime::NOMINAL:
+//             default:                              return {0.50, 0.20, 0.20, 0.10};
+//         }
+//     }
+
+//     // EMA smoothing ? prevents abrupt weight jumps between generations
+//     void smoothTransition() {
+//         for (int i = 0; i < 4; ++i) {
+//             current_weights_[i] = (1.0 - cfg_.transition_smoothing) * current_weights_[i]
+//                                 + cfg_.transition_smoothing * target_weights_[i];
+//         }
+//         // Re-normalise to guard against floating-point drift
+//         double sum = 0.0;
+//         for (double w : current_weights_) sum += w;
+//         if (sum > 0.0) {
+//             for (auto& w : current_weights_) w /= sum;
+//         }
+//     }
+
+//     static std::string regimeToString(SystemRegime r) {
+//         switch (r) {
+//             case SystemRegime::NOMINAL:           return "NOMINAL";
+//             case SystemRegime::BATTERY_CRITICAL:  return "BATTERY_CRITICAL";
+//             case SystemRegime::THERMAL_WARNING:   return "THERMAL_WARNING";
+//             case SystemRegime::THERMAL_CRITICAL:  return "THERMAL_CRITICAL";
+//             case SystemRegime::LATENCY_SLA:       return "LATENCY_SLA";
+//             case SystemRegime::HIGH_PERFORMANCE:  return "HIGH_PERFORMANCE";
+//             default:                              return "UNKNOWN";
+//         }
+//     }
+// };
+
+// } // namespace hrl
+
+
+// //=========================================================================================
+
+// // // ============================================================
+// // // AdaptiveWeightManager.h
+// // // PhD Priority 2: Context-Sensitive Meta-Controller for
+// // // Scalarisation Weights in Online Multi-Objective GA
+// // // ============================================================
+
+// // #pragma once
+
+// // #include <array>
+// // #include <deque>
+// // #include <string>
+// // #include <vector>
+// // #include <spdlog/spdlog.h>
+// // #include "RuntimeControls.h"   // for MetricsSnapshot
+
+// // namespace hrl {
+
+// // // ============================================================
+// // // System Regime Classification
+// // // ============================================================
+// // enum class SystemRegime {
+// //     NOMINAL,           // Normal operation
+// //     BATTERY_CRITICAL,  // Power severely constrained
+// //     THERMAL_WARNING,   // Approaching thermal limits
+// //     THERMAL_CRITICAL,  // Emergency thermal state
+// //     LATENCY_SLA,       // Latency SLA violation
+// //     HIGH_PERFORMANCE   // Need to push FPS
+// // };
+
+// // // ============================================================
+// // // Weight Profile per regime
+// // // ============================================================
+// // struct WeightProfile {
+// //     double w_fps;
+// //     double w_power;
+// //     double w_temp;
+// //     double w_latency;
+// //     std::string name;
+// // };
+
+// // // ============================================================
+// // // AdaptiveWeightManager
+// // // ============================================================
+// // class AdaptiveWeightManager {
+// // public:
+// //     // --------------------------------------------------------
+// //     // Configuration
+// //     // --------------------------------------------------------
+// //     struct Config {
+// //         int    update_interval_gens;
+// //         double battery_critical_watts;
+// //         double thermal_warn_cpu_c;
+// //         double thermal_warn_gpu_c;
+// //         double thermal_crit_cpu_c;
+// //         double thermal_crit_gpu_c;
+// //         double latency_sla_ms;
+// //         double fps_underperform_ratio;
+// //         double transition_smoothing;
+
+// //         // FIXED: Using explicit constructor initializer list to bypass GCC bug
+// //         Config() : 
+// //             update_interval_gens(5),
+// //             battery_critical_watts(8.0),
+// //             thermal_warn_cpu_c(75.0),
+// //             thermal_warn_gpu_c(78.0),
+// //             thermal_crit_cpu_c(80.0),
+// //             thermal_crit_gpu_c(83.0),
+// //             latency_sla_ms(45.0),
+// //             fps_underperform_ratio(0.70),
+// //             transition_smoothing(0.3) 
+// //         {}
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Weight history entry (for thesis plots)
+// //     // --------------------------------------------------------
+// //     struct WeightHistoryEntry {
+// //         int generation;
+// //         SystemRegime regime;
+// //         std::array<double, 4> weights;   // [fps, power, temp, latency]
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Constructor 
+// //     // --------------------------------------------------------
+// //     explicit AdaptiveWeightManager(Config cfg = Config())
+// //         : cfg_(cfg)
+// //     {
+// //         current_weights_ = getProfileWeights(SystemRegime::NOMINAL);
+// //         target_weights_  = current_weights_;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Main update ? call every GA generation
+// //     // --------------------------------------------------------
+// //     bool update(const MetricsSnapshot& snap, int current_generation, double target_fps) {
+// //         if (current_generation % cfg_.update_interval_gens != 0) {
+// //             return false;
+// //         }
+
+// //         SystemRegime new_regime = force_regime_ 
+// //             ? forced_regime_ 
+// //             : classifyRegime(snap, target_fps);
+
+// //         bool changed = (new_regime != current_regime_);
+
+// //         if (changed) {
+// //             spdlog::info("[AdaptiveWeightManager] Regime transition: {} -> {} (gen={})",
+// //                          regimeToString(current_regime_),
+// //                          regimeToString(new_regime),
+// //                          current_generation);
+// //             current_regime_ = new_regime;
+// //         }
+
+// //         target_weights_ = getProfileWeights(current_regime_);
+// //         smoothTransition();
+
+// //         weight_history_.push_back({current_generation, current_regime_, current_weights_});
+// //         if (weight_history_.size() > MAX_HISTORY) {
+// //             weight_history_.pop_front();
+// //         }
+
+// //         return changed;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Accessors
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getWeights() const { return current_weights_; }
+// //     SystemRegime getCurrentRegime() const { return current_regime_; }
+// //     std::string getCurrentRegimeName() const { return regimeToString(current_regime_); }
+// //     const std::deque<WeightHistoryEntry>& getWeightHistory() const { return weight_history_; }
+
+// //     // --------------------------------------------------------
+// //     // Forced regime control (for ablation studies)
+// //     // --------------------------------------------------------
+// //     void forceRegime(SystemRegime regime) {
+// //         force_regime_ = true;
+// //         forced_regime_ = regime;
+// //         spdlog::info("[AdaptiveWeightManager] Regime FORCED to {}", regimeToString(regime));
+// //     }
+
+// //     void clearForceRegime() {
+// //         force_regime_ = false;
+// //         spdlog::info("[AdaptiveWeightManager] Forced regime cleared ? resuming auto detection");
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // CSV export for thesis
+// //     // --------------------------------------------------------
+// //     std::string exportHistoryCSV() const {
+// //         std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency\n";
+// //         for (const auto& entry : weight_history_) {
+// //             csv += std::to_string(entry.generation) + "," 
+// //                 + regimeToString(entry.regime) + ","
+// //                 + std::to_string(entry.weights[0]) + ","
+// //                 + std::to_string(entry.weights[1]) + ","
+// //                 + std::to_string(entry.weights[2]) + ","
+// //                 + std::to_string(entry.weights[3]) + "\n";
+// //         }
+// //         return csv;
+// //     }
+
+// // private:
+// //     Config cfg_;
+// //     SystemRegime current_regime_ = SystemRegime::NOMINAL;
+// //     std::array<double, 4> current_weights_ = {0.50, 0.20, 0.20, 0.10};
+// //     std::array<double, 4> target_weights_  = {0.50, 0.20, 0.20, 0.10};
+
+// //     bool force_regime_ = false;
+// //     SystemRegime forced_regime_ = SystemRegime::NOMINAL;
+
+// //     std::deque<WeightHistoryEntry> weight_history_;
+// //     static constexpr size_t MAX_HISTORY = 100;
+
+// //     SystemRegime classifyRegime(const MetricsSnapshot& snap, double target_fps) const {
+// //         if (snap.cpu_temp_c > cfg_.thermal_crit_cpu_c || snap.gpu_temp_c > cfg_.thermal_crit_gpu_c)
+// //             return SystemRegime::THERMAL_CRITICAL;
+
+// //         if (snap.avg_power_w_alg > cfg_.battery_critical_watts)
+// //             return SystemRegime::BATTERY_CRITICAL;
+
+// //         if (snap.cpu_temp_c > cfg_.thermal_warn_cpu_c || snap.gpu_temp_c > cfg_.thermal_warn_gpu_c)
+// //             return SystemRegime::THERMAL_WARNING;
+
+// //         if (snap.avg_latency_ms > cfg_.latency_sla_ms)
+// //             return SystemRegime::LATENCY_SLA;
+
+// //         if (target_fps > 0.0 && snap.fps < cfg_.fps_underperform_ratio * target_fps)
+// //             return SystemRegime::HIGH_PERFORMANCE;
+
+// //         return SystemRegime::NOMINAL;
+// //     }
+
+// //     std::array<double, 4> getProfileWeights(SystemRegime regime) const {
+// //         switch (regime) {
+// //             case SystemRegime::BATTERY_CRITICAL:   return {0.25, 0.50, 0.15, 0.10};
+// //             case SystemRegime::THERMAL_WARNING:    return {0.35, 0.15, 0.40, 0.10};
+// //             case SystemRegime::THERMAL_CRITICAL:   return {0.20, 0.10, 0.60, 0.10};
+// //             case SystemRegime::LATENCY_SLA:        return {0.30, 0.15, 0.15, 0.40};
+// //             case SystemRegime::HIGH_PERFORMANCE:   return {0.65, 0.15, 0.15, 0.05};
+// //             case SystemRegime::NOMINAL:
+// //             default:                               return {0.50, 0.20, 0.20, 0.10};
+// //         }
+// //     }
+
+// //     void smoothTransition() {
+// //         for (int i = 0; i < 4; ++i) {
+// //             current_weights_[i] = (1.0 - cfg_.transition_smoothing) * current_weights_[i]
+// //                                 + cfg_.transition_smoothing * target_weights_[i];
+// //         }
+
+// //         double sum = 0.0;
+// //         for (double w : current_weights_) sum += w;
+// //         if (sum > 0.0) {
+// //             for (auto& w : current_weights_) w /= sum;
+// //         }
+// //     }
+
+// //     static std::string regimeToString(SystemRegime r) {
+// //         switch (r) {
+// //             case SystemRegime::NOMINAL:           return "NOMINAL";
+// //             case SystemRegime::BATTERY_CRITICAL:  return "BATTERY_CRITICAL";
+// //             case SystemRegime::THERMAL_WARNING:   return "THERMAL_WARNING";
+// //             case SystemRegime::THERMAL_CRITICAL:  return "THERMAL_CRITICAL";
+// //             case SystemRegime::LATENCY_SLA:       return "LATENCY_SLA";
+// //             case SystemRegime::HIGH_PERFORMANCE:  return "HIGH_PERFORMANCE";
+// //             default:                              return "UNKNOWN";
+// //         }
+// //     }
+// // };
+
+// // } // namespace hrl
+
+// //=======================================================================================================================================
+// // // ============================================================
+// // // AdaptiveWeightManager.h
+// // // PhD Priority 2: Context-Sensitive Meta-Controller for
+// // // Scalarisation Weights in Online Multi-Objective GA
+// // // ============================================================
+
+// // #pragma once
+
+// // #include <array>
+// // #include <deque>
+// // #include <string>
+// // #include <vector>
+// // #include <spdlog/spdlog.h>
+// // #include "RuntimeControls.h"   // for MetricsSnapshot
+
+// // namespace hrl {
+
+// // // ============================================================
+// // // System Regime Classification
+// // // ============================================================
+// // enum class SystemRegime {
+// //     NOMINAL,           // Normal operation
+// //     BATTERY_CRITICAL,  // Power severely constrained
+// //     THERMAL_WARNING,   // Approaching thermal limits
+// //     THERMAL_CRITICAL,  // Emergency thermal state
+// //     LATENCY_SLA,       // Latency SLA violation
+// //     HIGH_PERFORMANCE   // Need to push FPS
+// // };
+
+// // // ============================================================
+// // // Weight Profile per regime
+// // // ============================================================
+// // struct WeightProfile {
+// //     double w_fps;
+// //     double w_power;
+// //     double w_temp;
+// //     double w_latency;
+// //     std::string name;
+// // };
+
+// // // ============================================================
+// // // AdaptiveWeightManager
+// // // ============================================================
+// // class AdaptiveWeightManager {
+// // public:
+// //     // --------------------------------------------------------
+// //     // Configuration
+// //     // --------------------------------------------------------
+// //     struct Config {
+// //         int    update_interval_gens     = 5;      // Re-evaluate every N generations
+// //         double battery_critical_watts   = 8.0;
+// //         double thermal_warn_cpu_c       = 75.0;
+// //         double thermal_warn_gpu_c       = 78.0;
+// //         double thermal_crit_cpu_c       = 80.0;
+// //         double thermal_crit_gpu_c       = 83.0;
+// //         double latency_sla_ms           = 45.0;
+// //         double fps_underperform_ratio   = 0.70;
+// //         double transition_smoothing     = 0.3;    // EMA factor
+
+// //         // Explicit default constructor (required for default parameter)
+// //         Config() = default;
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Weight history entry (for thesis plots)
+// //     // --------------------------------------------------------
+// //     struct WeightHistoryEntry {
+// //         int generation;
+// //         SystemRegime regime;
+// //         std::array<double, 4> weights;   // [fps, power, temp, latency]
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Constructor ? Fixed default parameter
+// //     // --------------------------------------------------------
+// //     explicit AdaptiveWeightManager(Config cfg = Config())
+// //         : cfg_(cfg)
+// //     {
+// //         current_weights_ = getProfileWeights(SystemRegime::NOMINAL);
+// //         target_weights_  = current_weights_;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Main update ? call every GA generation
+// //     // --------------------------------------------------------
+// //     bool update(const MetricsSnapshot& snap, int current_generation, double target_fps) {
+// //         if (current_generation % cfg_.update_interval_gens != 0) {
+// //             return false;
+// //         }
+
+// //         SystemRegime new_regime = force_regime_ 
+// //             ? forced_regime_ 
+// //             : classifyRegime(snap, target_fps);
+
+// //         bool changed = (new_regime != current_regime_);
+
+// //         if (changed) {
+// //             spdlog::info("[AdaptiveWeightManager] Regime transition: {} ? {} (gen={})",
+// //                          regimeToString(current_regime_),
+// //                          regimeToString(new_regime),
+// //                          current_generation);
+// //             current_regime_ = new_regime;
+// //         }
+
+// //         target_weights_ = getProfileWeights(current_regime_);
+// //         smoothTransition();
+
+// //         weight_history_.push_back({current_generation, current_regime_, current_weights_});
+// //         if (weight_history_.size() > MAX_HISTORY) {
+// //             weight_history_.pop_front();
+// //         }
+
+// //         return changed;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Accessors
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getWeights() const { return current_weights_; }
+// //     SystemRegime getCurrentRegime() const { return current_regime_; }
+// //     std::string getCurrentRegimeName() const { return regimeToString(current_regime_); }
+
+// //     const std::deque<WeightHistoryEntry>& getWeightHistory() const { return weight_history_; }
+
+// //     // --------------------------------------------------------
+// //     // Forced regime control (for ablation studies)
+// //     // --------------------------------------------------------
+// //     void forceRegime(SystemRegime regime) {
+// //         force_regime_ = true;
+// //         forced_regime_ = regime;
+// //         spdlog::info("[AdaptiveWeightManager] Regime FORCED to {}", regimeToString(regime));
+// //     }
+
+// //     void clearForceRegime() {
+// //         force_regime_ = false;
+// //         spdlog::info("[AdaptiveWeightManager] Forced regime cleared ? resuming auto detection");
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // CSV export for thesis
+// //     // --------------------------------------------------------
+// //     std::string exportHistoryCSV() const {
+// //         std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency\n";
+// //         for (const auto& entry : weight_history_) {
+// //             csv += std::to_string(entry.generation) + "," 
+// //                 + regimeToString(entry.regime) + ","
+// //                 + std::to_string(entry.weights[0]) + ","
+// //                 + std::to_string(entry.weights[1]) + ","
+// //                 + std::to_string(entry.weights[2]) + ","
+// //                 + std::to_string(entry.weights[3]) + "\n";
+// //         }
+// //         return csv;
+// //     }
+
+// // private:
+// //     Config cfg_;
+// //     SystemRegime current_regime_ = SystemRegime::NOMINAL;
+// //     std::array<double, 4> current_weights_ = {0.50, 0.20, 0.20, 0.10};
+// //     std::array<double, 4> target_weights_  = {0.50, 0.20, 0.20, 0.10};
+
+// //     bool force_regime_ = false;
+// //     SystemRegime forced_regime_ = SystemRegime::NOMINAL;
+
+// //     std::deque<WeightHistoryEntry> weight_history_;
+// //     static constexpr size_t MAX_HISTORY = 100;
+
+// //     // --------------------------------------------------------
+// //     // Regime Classification
+// //     // --------------------------------------------------------
+// //     SystemRegime classifyRegime(const MetricsSnapshot& snap, double target_fps) const {
+// //         if (snap.cpu_temp_c > cfg_.thermal_crit_cpu_c || snap.gpu_temp_c > cfg_.thermal_crit_gpu_c)
+// //             return SystemRegime::THERMAL_CRITICAL;
+
+// //         if (snap.avg_power_w_alg > cfg_.battery_critical_watts)
+// //             return SystemRegime::BATTERY_CRITICAL;
+
+// //         if (snap.cpu_temp_c > cfg_.thermal_warn_cpu_c || snap.gpu_temp_c > cfg_.thermal_warn_gpu_c)
+// //             return SystemRegime::THERMAL_WARNING;
+
+// //         if (snap.avg_latency_ms > cfg_.latency_sla_ms)
+// //             return SystemRegime::LATENCY_SLA;
+
+// //         if (target_fps > 0.0 && snap.fps < cfg_.fps_underperform_ratio * target_fps)
+// //             return SystemRegime::HIGH_PERFORMANCE;
+
+// //         return SystemRegime::NOMINAL;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Weight profiles (must sum to 1.0)
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getProfileWeights(SystemRegime regime) const {
+// //         switch (regime) {
+// //             case SystemRegime::BATTERY_CRITICAL:   return {0.25, 0.50, 0.15, 0.10};
+// //             case SystemRegime::THERMAL_WARNING:    return {0.35, 0.15, 0.40, 0.10};
+// //             case SystemRegime::THERMAL_CRITICAL:   return {0.20, 0.10, 0.60, 0.10};
+// //             case SystemRegime::LATENCY_SLA:        return {0.30, 0.15, 0.15, 0.40};
+// //             case SystemRegime::HIGH_PERFORMANCE:   return {0.65, 0.15, 0.15, 0.05};
+// //             case SystemRegime::NOMINAL:
+// //             default:                               return {0.50, 0.20, 0.20, 0.10};
+// //         }
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // EMA smoothing
+// //     // --------------------------------------------------------
+// //     void smoothTransition() {
+// //         for (int i = 0; i < 4; ++i) {
+// //             current_weights_[i] = (1.0 - cfg_.transition_smoothing) * current_weights_[i]
+// //                                 + cfg_.transition_smoothing * target_weights_[i];
+// //         }
+
+// //         double sum = 0.0;
+// //         for (double w : current_weights_) sum += w;
+// //         if (sum > 0.0) {
+// //             for (auto& w : current_weights_) w /= sum;
+// //         }
+// //     }
+
+// //     static std::string regimeToString(SystemRegime r) {
+// //         switch (r) {
+// //             case SystemRegime::NOMINAL:           return "NOMINAL";
+// //             case SystemRegime::BATTERY_CRITICAL:  return "BATTERY_CRITICAL";
+// //             case SystemRegime::THERMAL_WARNING:   return "THERMAL_WARNING";
+// //             case SystemRegime::THERMAL_CRITICAL:  return "THERMAL_CRITICAL";
+// //             case SystemRegime::LATENCY_SLA:       return "LATENCY_SLA";
+// //             case SystemRegime::HIGH_PERFORMANCE:  return "HIGH_PERFORMANCE";
+// //             default:                              return "UNKNOWN";
+// //         }
+// //     }
+// // };
+
+// // } // namespace hrl
+
+
+// //================================================================================================================================================
+// // // ============================================================
+// // // AdaptiveWeightManager.h
+// // // FIXED VERSION ? COMPILATION SAFE + PRODUCTION READY
+// // // ============================================================
+
+// // #pragma once
+
+// // #include <array>
+// // #include <deque>
+// // #include <string>
+// // #include <vector>
+// // #include <spdlog/spdlog.h>
+// // #include "RuntimeControls.h"
+
+// // namespace hrl {
+
+// // // ============================================================
+// // // System Regime Classification
+// // // ============================================================
+// // enum class SystemRegime {
+// //     NOMINAL,
+// //     BATTERY_CRITICAL,
+// //     THERMAL_WARNING,
+// //     THERMAL_CRITICAL,
+// //     LATENCY_SLA,
+// //     HIGH_PERFORMANCE
+// // };
+
+// // // ============================================================
+// // // Weight Profile
+// // // ============================================================
+// // struct WeightProfile {
+// //     double w_fps;
+// //     double w_power;
+// //     double w_temp;
+// //     double w_latency;
+// //     std::string name;
+// // };
+
+// // // ============================================================
+// // // AdaptiveWeightManager
+// // // ============================================================
+// // class AdaptiveWeightManager {
+// // public:
+
+// //     // --------------------------------------------------------
+// //     // Config
+// //     // --------------------------------------------------------
+// //     struct Config {
+// //         int    update_interval_gens   = 5;
+// //         double battery_critical_watts = 8.0;
+// //         double thermal_warn_cpu_c     = 75.0;
+// //         double thermal_warn_gpu_c     = 78.0;
+// //         double thermal_crit_cpu_c     = 80.0;
+// //         double thermal_crit_gpu_c     = 83.0;
+// //         double latency_sla_ms         = 45.0;
+// //         double fps_underperform_ratio = 0.70;
+// //         double transition_smoothing   = 0.3;
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // History Entry
+// //     // --------------------------------------------------------
+// //     struct WeightHistoryEntry {
+// //         int generation;
+// //         SystemRegime regime;
+// //         std::array<double, 4> weights;
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // ? FIXED CONSTRUCTOR (ROOT FIX HERE)
+// //     // --------------------------------------------------------
+// //     explicit AdaptiveWeightManager(Config cfg = {})
+// //         : cfg_(cfg)
+// //     {
+// //         current_weights_ = getProfileWeights(SystemRegime::NOMINAL);
+// //         target_weights_  = current_weights_;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Update
+// //     // --------------------------------------------------------
+// //     bool update(const MetricsSnapshot& snap, int current_generation, double target_fps)
+// //     {
+// //         if (cfg_.update_interval_gens <= 0) return false;
+
+// //         if (current_generation % cfg_.update_interval_gens != 0)
+// //             return false;
+
+// //         SystemRegime new_regime = force_regime_
+// //             ? forced_regime_
+// //             : classifyRegime(snap, target_fps);
+
+// //         bool changed = (new_regime != current_regime_);
+
+// //         if (changed) {
+// //             spdlog::info("[AdaptiveWeightManager] Regime transition: {} -> {} (gen={})",
+// //                          regimeToString(current_regime_),
+// //                          regimeToString(new_regime),
+// //                          current_generation);
+// //             current_regime_ = new_regime;
+// //         }
+
+// //         target_weights_ = getProfileWeights(current_regime_);
+// //         smoothTransition();
+
+// //         weight_history_.push_back({current_generation, current_regime_, current_weights_});
+// //         if (weight_history_.size() > MAX_HISTORY)
+// //             weight_history_.pop_front();
+
+// //         return changed;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Accessors
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getWeights() const { return current_weights_; }
+// //     SystemRegime getCurrentRegime() const { return current_regime_; }
+// //     std::string getCurrentRegimeName() const { return regimeToString(current_regime_); }
+// //     const std::deque<WeightHistoryEntry>& getWeightHistory() const { return weight_history_; }
+
+// //     // --------------------------------------------------------
+// //     // Forced Regime
+// //     // --------------------------------------------------------
+// //     void forceRegime(SystemRegime regime)
+// //     {
+// //         force_regime_ = true;
+// //         forced_regime_ = regime;
+// //         spdlog::info("[AdaptiveWeightManager] Regime FORCED to {}", regimeToString(regime));
+// //     }
+
+// //     void clearForceRegime()
+// //     {
+// //         force_regime_ = false;
+// //         spdlog::info("[AdaptiveWeightManager] Forced regime cleared");
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // CSV Export
+// //     // --------------------------------------------------------
+// //     std::string exportHistoryCSV() const
+// //     {
+// //         std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency\n";
+
+// //         for (const auto& entry : weight_history_) {
+// //             csv += std::to_string(entry.generation) + "," +
+// //                    regimeToString(entry.regime) + "," +
+// //                    std::to_string(entry.weights[0]) + "," +
+// //                    std::to_string(entry.weights[1]) + "," +
+// //                    std::to_string(entry.weights[2]) + "," +
+// //                    std::to_string(entry.weights[3]) + "\n";
+// //         }
+
+// //         return csv;
+// //     }
+
+// // private:
+
+// //     Config cfg_;
+
+// //     SystemRegime current_regime_ = SystemRegime::NOMINAL;
+
+// //     std::array<double, 4> current_weights_ = {0.50, 0.20, 0.20, 0.10};
+// //     std::array<double, 4> target_weights_  = {0.50, 0.20, 0.20, 0.10};
+
+// //     bool force_regime_ = false;
+// //     SystemRegime forced_regime_ = SystemRegime::NOMINAL;
+
+// //     std::deque<WeightHistoryEntry> weight_history_;
+// //     static constexpr size_t MAX_HISTORY = 100;
+
+// //     // --------------------------------------------------------
+// //     // Regime Classification
+// //     // --------------------------------------------------------
+// //     SystemRegime classifyRegime(const MetricsSnapshot& snap, double target_fps) const
+// //     {
+// //         if (snap.cpu_temp_c > cfg_.thermal_crit_cpu_c ||
+// //             snap.gpu_temp_c > cfg_.thermal_crit_gpu_c)
+// //             return SystemRegime::THERMAL_CRITICAL;
+
+// //         if (snap.avg_power_w_alg > cfg_.battery_critical_watts)
+// //             return SystemRegime::BATTERY_CRITICAL;
+
+// //         if (snap.cpu_temp_c > cfg_.thermal_warn_cpu_c ||
+// //             snap.gpu_temp_c > cfg_.thermal_warn_gpu_c)
+// //             return SystemRegime::THERMAL_WARNING;
+
+// //         if (snap.avg_latency_ms > cfg_.latency_sla_ms)
+// //             return SystemRegime::LATENCY_SLA;
+
+// //         if (target_fps > 0.0 &&
+// //             snap.fps < cfg_.fps_underperform_ratio * target_fps)
+// //             return SystemRegime::HIGH_PERFORMANCE;
+
+// //         return SystemRegime::NOMINAL;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Weight Profiles
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getProfileWeights(SystemRegime regime) const
+// //     {
+// //         switch (regime) {
+// //             case SystemRegime::BATTERY_CRITICAL: return {0.25, 0.50, 0.15, 0.10};
+// //             case SystemRegime::THERMAL_WARNING:  return {0.35, 0.15, 0.40, 0.10};
+// //             case SystemRegime::THERMAL_CRITICAL: return {0.20, 0.10, 0.60, 0.10};
+// //             case SystemRegime::LATENCY_SLA:      return {0.30, 0.15, 0.15, 0.40};
+// //             case SystemRegime::HIGH_PERFORMANCE: return {0.65, 0.15, 0.15, 0.05};
+// //             case SystemRegime::NOMINAL:
+// //             default:                             return {0.50, 0.20, 0.20, 0.10};
+// //         }
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // EMA Smoothing
+// //     // --------------------------------------------------------
+// //     void smoothTransition()
+// //     {
+// //         const double alpha = cfg_.transition_smoothing;
+
+// //         for (size_t i = 0; i < current_weights_.size(); ++i) {
+// //             current_weights_[i] =
+// //                 (1.0 - alpha) * current_weights_[i] +
+// //                 alpha * target_weights_[i];
+// //         }
+
+// //         // Normalize
+// //         double sum = 0.0;
+// //         for (double w : current_weights_) sum += w;
+
+// //         if (sum > 0.0) {
+// //             for (auto& w : current_weights_)
+// //                 w /= sum;
+// //         }
+// //     }
+
+// //     static std::string regimeToString(SystemRegime r)
+// //     {
+// //         switch (r) {
+// //             case SystemRegime::NOMINAL:          return "NOMINAL";
+// //             case SystemRegime::BATTERY_CRITICAL: return "BATTERY_CRITICAL";
+// //             case SystemRegime::THERMAL_WARNING:  return "THERMAL_WARNING";
+// //             case SystemRegime::THERMAL_CRITICAL: return "THERMAL_CRITICAL";
+// //             case SystemRegime::LATENCY_SLA:      return "LATENCY_SLA";
+// //             case SystemRegime::HIGH_PERFORMANCE: return "HIGH_PERFORMANCE";
+// //             default:                             return "UNKNOWN";
+// //         }
+// //     }
+// // };
+
+// // } // namespace hrl
+
+// // // ============================================================
+// // // AdaptiveWeightManager.h
+// // // PhD Priority 2: Context-Sensitive Meta-Controller for
+// // // Scalarisation Weights in Online Multi-Objective GA
+// // // ============================================================
+// // // REVISION: Jetson Nano-calibrated thresholds (2026-06-30)
+// // //
+// // // Change summary vs original:
+// // //
+// // //   Config defaults lowered to match real Jetson Nano operating range
+// // //   observed in ERL vs baseline experiments (tegrastats analysis):
+// // //
+// // //     Field                   Original   Revised   Rationale
+// // //     ---------------------------------------------------------
+// // //     thermal_warn_cpu_c      75.0       57.0      Baselines run 56-65°C;
+// // //     thermal_warn_gpu_c      78.0       57.0      orig threshold never fired
+// // //     thermal_crit_cpu_c      80.0       63.0      ERL runs 39-45°C (NORMAL)
+// // //     thermal_crit_gpu_c      83.0       63.0      baselines reach WARNING
+// // //     battery_critical_watts   8.0        3.5      Jetson Nano 5W mode ceiling
+// // //     latency_sla_ms          45.0       30.0      tighter SLA for embedded use
+// // //     fps_underperform_ratio   0.70       0.70      unchanged
+// // //     transition_smoothing     0.30       0.30      unchanged
+// // //     update_interval_gens     5          5         unchanged
+// // //
+// // //   classifyRegime() now logs the triggering metric on regime change to aid
+// // //   thesis evidence export and debugging.
+// // //
+// // //   Config::original() factory added  restores pre-revision defaults for
+// // //   A/B comparison in ablation studies without recompilation.
+// // //
+// // //   exportHistoryCSV() extended with a "trigger_value" column for the
+// // //   metric that caused each regime transition.
+// // //
+// // // PhD rationale:
+// // //   With original thresholds, THERMAL_WARNING and THERMAL_CRITICAL never
+// // //   activated (all runs < 68°C peak). The weight vector was therefore fixed
+// // //   at NOMINAL={0.50,0.20,0.20,0.10} throughout every experiment.
+// // //   With revised thresholds, baselines (61-65°C CPU) enter THERMAL_WARNING
+// // //   ? weights shift to {0.35,0.15,0.40,0.10}, increasing temperature penalty.
+// // //   ERL runs (39-45°C) remain in NOMINAL. This differential is detectable by
+// // //   calculateScalarizedFitness() and gives the Pareto front a live thermal
+// // //   gradient to optimize against  exactly what the PhD hypothesis requires.
+// // // ============================================================
+
+// // #pragma once
+
+// // #include <array>
+// // #include <deque>
+// // #include <string>
+// // #include <vector>
+// // #include <spdlog/spdlog.h>
+// // #include "RuntimeControls.h"   // for MetricsSnapshot
+
+// // namespace hrl {
+
+// // // ============================================================
+// // // System Regime Classification
+// // // ============================================================
+// // enum class SystemRegime {
+// //     NOMINAL,           // Normal operation
+// //     BATTERY_CRITICAL,  // Power severely constrained
+// //     THERMAL_WARNING,   // Approaching thermal limits
+// //     THERMAL_CRITICAL,  // Emergency thermal state
+// //     LATENCY_SLA,       // Latency SLA violation
+// //     HIGH_PERFORMANCE   // Need to push FPS
+// // };
+
+// // // ============================================================
+// // // Weight Profile per regime
+// // // ============================================================
+// // struct WeightProfile {
+// //     double w_fps;
+// //     double w_power;
+// //     double w_temp;
+// //     double w_latency;
+// //     std::string name;
+// // };
+
+// // // ============================================================
+// // // AdaptiveWeightManager
+// // // ============================================================
+// // class AdaptiveWeightManager {
+// // public:
+// //     // --------------------------------------------------------
+// //     // Configuration  Jetson Nano calibrated defaults
+// //     // --------------------------------------------------------
+// //     struct Config {
+// //         int    update_interval_gens;
+// //         double battery_critical_watts;
+// //         double thermal_warn_cpu_c;
+// //         double thermal_warn_gpu_c;
+// //         double thermal_crit_cpu_c;
+// //         double thermal_crit_gpu_c;
+// //         double latency_sla_ms;
+// //         double fps_underperform_ratio;
+// //         double transition_smoothing;
+
+// //         // Revised defaults  aligned to ThermalGovernor::Config Jetson Nano thresholds.
+// //         // CAUTION fires at 55°C; AWM THERMAL_WARNING fires at thermal_warn_cpu_c=57°C
+// //         // so the two systems escalate in the same temperature band.
+// //         Config() :
+// //             update_interval_gens(5),
+// //             battery_critical_watts(3.5),   // Jetson Nano 5W mode ceiling (was 8.0)
+// //             thermal_warn_cpu_c(57.0),      // Was 75.0  baselines hit this at load
+// //             thermal_warn_gpu_c(57.0),      // Was 78.0
+// //             thermal_crit_cpu_c(63.0),      // Was 80.0  above WARNING, below TG::WARNING
+// //             thermal_crit_gpu_c(63.0),      // Was 83.0
+// //             latency_sla_ms(30.0),          // Was 45.0  tighter for embedded pipeline
+// //             fps_underperform_ratio(0.70),  // Unchanged
+// //             transition_smoothing(0.30)     // Unchanged  EMA alpha
+// //         {}
+
+// //         // Factory: restores original (pre-revision) defaults for ablation studies.
+// //         // Use this to run a control experiment with inactive thermal regimes.
+// //         static Config original() {
+// //             Config c;
+// //             c.battery_critical_watts = 8.0;
+// //             c.thermal_warn_cpu_c     = 75.0;
+// //             c.thermal_warn_gpu_c     = 78.0;
+// //             c.thermal_crit_cpu_c     = 80.0;
+// //             c.thermal_crit_gpu_c     = 83.0;
+// //             c.latency_sla_ms         = 45.0;
+// //             return c;
+// //         }
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Weight history entry (for thesis plots)
+// //     // Extended: trigger_value records the metric that caused the regime change.
+// //     // --------------------------------------------------------
+// //     struct WeightHistoryEntry {
+// //         int generation;
+// //         SystemRegime regime;
+// //         std::array<double, 4> weights;   // [fps, power, temp, latency]
+// //         double trigger_value = 0.0;      // The metric reading that caused this entry
+// //         std::string trigger_field;       // e.g. "cpu_temp_c", "avg_power_w_alg"
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Constructor
+// //     // --------------------------------------------------------
+// //     explicit AdaptiveWeightManager(Config cfg = Config())
+// //         : cfg_(cfg)
+// //     {
+// //         current_weights_ = getProfileWeights(SystemRegime::NOMINAL);
+// //         target_weights_  = current_weights_;
+
+// //         spdlog::info("[AdaptiveWeightManager] Initialized "
+// //                      "(thermal_warn={:.0f}°C, thermal_crit={:.0f}°C, "
+// //                      "battery_crit={:.1f}W, latency_sla={:.0f}ms)",
+// //                      cfg_.thermal_warn_cpu_c, cfg_.thermal_crit_cpu_c,
+// //                      cfg_.battery_critical_watts, cfg_.latency_sla_ms);
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Main update  call every GA generation.
+// //     // Returns true if the regime changed this tick.
+// //     // --------------------------------------------------------
+// //     bool update(const MetricsSnapshot& snap, int current_generation, double target_fps) {
+// //         if (current_generation % cfg_.update_interval_gens != 0) {
+// //             return false;
+// //         }
+
+// //         double trigger_val = 0.0;
+// //         std::string trigger_field;
+
+// //         SystemRegime new_regime = force_regime_
+// //             ? forced_regime_
+// //             : classifyRegime(snap, target_fps, trigger_val, trigger_field);
+
+// //         bool changed = (new_regime != current_regime_);
+
+// //         if (changed) {
+// //             spdlog::info("[AdaptiveWeightManager] Regime transition: {} -> {} "
+// //                          "(gen={}, {}={:.2f})",
+// //                          regimeToString(current_regime_),
+// //                          regimeToString(new_regime),
+// //                          current_generation,
+// //                          trigger_field, trigger_val);
+// //             current_regime_ = new_regime;
+// //         }
+
+// //         target_weights_ = getProfileWeights(current_regime_);
+// //         smoothTransition();
+
+// //         weight_history_.push_back({
+// //             current_generation,
+// //             current_regime_,
+// //             current_weights_,
+// //             trigger_val,
+// //             trigger_field
+// //         });
+// //         if (weight_history_.size() > MAX_HISTORY) {
+// //             weight_history_.pop_front();
+// //         }
+
+// //         return changed;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Accessors
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getWeights() const { return current_weights_; }
+// //     SystemRegime getCurrentRegime() const { return current_regime_; }
+// //     std::string getCurrentRegimeName() const { return regimeToString(current_regime_); }
+// //     const std::deque<WeightHistoryEntry>& getWeightHistory() const { return weight_history_; }
+// //     const Config& getConfig() const { return cfg_; }
+
+// //     // --------------------------------------------------------
+// //     // Forced regime control (for ablation studies)
+// //     // --------------------------------------------------------
+// //     void forceRegime(SystemRegime regime) {
+// //         force_regime_  = true;
+// //         forced_regime_ = regime;
+// //         spdlog::info("[AdaptiveWeightManager] Regime FORCED to {}", regimeToString(regime));
+// //     }
+
+// //     void clearForceRegime() {
+// //         force_regime_ = false;
+// //         spdlog::info("[AdaptiveWeightManager] Forced regime cleared  resuming auto detection");
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // CSV export for thesis (Figure 6.x: weight evolution).
+// //     // Extended with trigger_field and trigger_value columns.
+// //     // --------------------------------------------------------
+// //     std::string exportHistoryCSV() const {
+// //         std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency,"
+// //                           "trigger_field,trigger_value\n";
+// //         for (const auto& e : weight_history_) {
+// //             csv += std::to_string(e.generation)    + ","
+// //                  + regimeToString(e.regime)         + ","
+// //                  + std::to_string(e.weights[0])     + ","
+// //                  + std::to_string(e.weights[1])     + ","
+// //                  + std::to_string(e.weights[2])     + ","
+// //                  + std::to_string(e.weights[3])     + ","
+// //                  + e.trigger_field                  + ","
+// //                  + std::to_string(e.trigger_value)  + "\n";
+// //         }
+// //         return csv;
+// //     }
+
+// // private:
+// //     Config cfg_;
+// //     SystemRegime current_regime_ = SystemRegime::NOMINAL;
+// //     std::array<double, 4> current_weights_ = {0.50, 0.20, 0.20, 0.10};
+// //     std::array<double, 4> target_weights_  = {0.50, 0.20, 0.20, 0.10};
+
+// //     bool force_regime_          = false;
+// //     SystemRegime forced_regime_ = SystemRegime::NOMINAL;
+
+// //     std::deque<WeightHistoryEntry> weight_history_;
+// //     static constexpr size_t MAX_HISTORY = 500;   // Extended: 100 ? 500 for full 30-min run
+
+// //     // --------------------------------------------------------
+// //     // Regime classification.
+// //     // Priority order is intentional: thermal safety first, then power,
+// //     // then latency SLA, then performance deficit.
+// //     // trigger_val / trigger_field are filled for logging and CSV export.
+// //     // --------------------------------------------------------
+// //     SystemRegime classifyRegime(const MetricsSnapshot& snap,
+// //                                 double target_fps,
+// //                                 double& trigger_val,
+// //                                 std::string& trigger_field) const {
+// //         // 1. Thermal critical  highest priority
+// //         if (snap.cpu_temp_c > cfg_.thermal_crit_cpu_c) {
+// //             trigger_val   = snap.cpu_temp_c;
+// //             trigger_field = "cpu_temp_c";
+// //             return SystemRegime::THERMAL_CRITICAL;
+// //         }
+// //         if (snap.gpu_temp_c > cfg_.thermal_crit_gpu_c) {
+// //             trigger_val   = snap.gpu_temp_c;
+// //             trigger_field = "gpu_temp_c";
+// //             return SystemRegime::THERMAL_CRITICAL;
+// //         }
+
+// //         // 2. Battery / power critical
+// //         if (snap.avg_power_w_alg > cfg_.battery_critical_watts) {
+// //             trigger_val   = snap.avg_power_w_alg;
+// //             trigger_field = "avg_power_w_alg";
+// //             return SystemRegime::BATTERY_CRITICAL;
+// //         }
+
+// //         // 3. Thermal warning
+// //         if (snap.cpu_temp_c > cfg_.thermal_warn_cpu_c) {
+// //             trigger_val   = snap.cpu_temp_c;
+// //             trigger_field = "cpu_temp_c";
+// //             return SystemRegime::THERMAL_WARNING;
+// //         }
+// //         if (snap.gpu_temp_c > cfg_.thermal_warn_gpu_c) {
+// //             trigger_val   = snap.gpu_temp_c;
+// //             trigger_field = "gpu_temp_c";
+// //             return SystemRegime::THERMAL_WARNING;
+// //         }
+
+// //         // 4. Latency SLA breach
+// //         if (snap.avg_latency_ms > cfg_.latency_sla_ms) {
+// //             trigger_val   = snap.avg_latency_ms;
+// //             trigger_field = "avg_latency_ms";
+// //             return SystemRegime::LATENCY_SLA;
+// //         }
+
+// //         // 5. FPS underperformance
+// //         if (target_fps > 0.0 && snap.fps < cfg_.fps_underperform_ratio * target_fps) {
+// //             trigger_val   = snap.fps;
+// //             trigger_field = "fps";
+// //             return SystemRegime::HIGH_PERFORMANCE;
+// //         }
+
+// //         trigger_val   = snap.cpu_temp_c;
+// //         trigger_field = "cpu_temp_c";
+// //         return SystemRegime::NOMINAL;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Weight profiles  unchanged from original.
+// //     // Profiles are the research contribution; thresholds above
+// //     // are calibration parameters.
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getProfileWeights(SystemRegime regime) const {
+// //         switch (regime) {
+// //             case SystemRegime::BATTERY_CRITICAL:  return {0.25, 0.50, 0.15, 0.10};
+// //             case SystemRegime::THERMAL_WARNING:   return {0.35, 0.15, 0.40, 0.10};
+// //             case SystemRegime::THERMAL_CRITICAL:  return {0.20, 0.10, 0.60, 0.10};
+// //             case SystemRegime::LATENCY_SLA:       return {0.30, 0.15, 0.15, 0.40};
+// //             case SystemRegime::HIGH_PERFORMANCE:  return {0.65, 0.15, 0.15, 0.05};
+// //             case SystemRegime::NOMINAL:
+// //             default:                              return {0.50, 0.20, 0.20, 0.10};
+// //         }
+// //     }
+
+// //     // EMA smoothing  prevents abrupt weight jumps between generations
+// //     void smoothTransition() {
+// //         for (int i = 0; i < 4; ++i) {
+// //             current_weights_[i] = (1.0 - cfg_.transition_smoothing) * current_weights_[i]
+// //                                 + cfg_.transition_smoothing * target_weights_[i];
+// //         }
+// //         // Re-normalise to guard against floating-point drift
+// //         double sum = 0.0;
+// //         for (double w : current_weights_) sum += w;
+// //         if (sum > 0.0) {
+// //             for (auto& w : current_weights_) w /= sum;
+// //         }
+// //     }
+
+// //     static std::string regimeToString(SystemRegime r) {
+// //         switch (r) {
+// //             case SystemRegime::NOMINAL:           return "NOMINAL";
+// //             case SystemRegime::BATTERY_CRITICAL:  return "BATTERY_CRITICAL";
+// //             case SystemRegime::THERMAL_WARNING:   return "THERMAL_WARNING";
+// //             case SystemRegime::THERMAL_CRITICAL:  return "THERMAL_CRITICAL";
+// //             case SystemRegime::LATENCY_SLA:       return "LATENCY_SLA";
+// //             case SystemRegime::HIGH_PERFORMANCE:  return "HIGH_PERFORMANCE";
+// //             default:                              return "UNKNOWN";
+// //         }
+// //     }
+// // };
+
+// // } // namespace hrl
+
+
+// //=========================================================================================
+
+// // // ============================================================
+// // // AdaptiveWeightManager.h
+// // // PhD Priority 2: Context-Sensitive Meta-Controller for
+// // // Scalarisation Weights in Online Multi-Objective GA
+// // // ============================================================
+
+// // #pragma once
+
+// // #include <array>
+// // #include <deque>
+// // #include <string>
+// // #include <vector>
+// // #include <spdlog/spdlog.h>
+// // #include "RuntimeControls.h"   // for MetricsSnapshot
+
+// // namespace hrl {
+
+// // // ============================================================
+// // // System Regime Classification
+// // // ============================================================
+// // enum class SystemRegime {
+// //     NOMINAL,           // Normal operation
+// //     BATTERY_CRITICAL,  // Power severely constrained
+// //     THERMAL_WARNING,   // Approaching thermal limits
+// //     THERMAL_CRITICAL,  // Emergency thermal state
+// //     LATENCY_SLA,       // Latency SLA violation
+// //     HIGH_PERFORMANCE   // Need to push FPS
+// // };
+
+// // // ============================================================
+// // // Weight Profile per regime
+// // // ============================================================
+// // struct WeightProfile {
+// //     double w_fps;
+// //     double w_power;
+// //     double w_temp;
+// //     double w_latency;
+// //     std::string name;
+// // };
+
+// // // ============================================================
+// // // AdaptiveWeightManager
+// // // ============================================================
+// // class AdaptiveWeightManager {
+// // public:
+// //     // --------------------------------------------------------
+// //     // Configuration
+// //     // --------------------------------------------------------
+// //     struct Config {
+// //         int    update_interval_gens;
+// //         double battery_critical_watts;
+// //         double thermal_warn_cpu_c;
+// //         double thermal_warn_gpu_c;
+// //         double thermal_crit_cpu_c;
+// //         double thermal_crit_gpu_c;
+// //         double latency_sla_ms;
+// //         double fps_underperform_ratio;
+// //         double transition_smoothing;
+
+// //         // FIXED: Using explicit constructor initializer list to bypass GCC bug
+// //         Config() : 
+// //             update_interval_gens(5),
+// //             battery_critical_watts(8.0),
+// //             thermal_warn_cpu_c(75.0),
+// //             thermal_warn_gpu_c(78.0),
+// //             thermal_crit_cpu_c(80.0),
+// //             thermal_crit_gpu_c(83.0),
+// //             latency_sla_ms(45.0),
+// //             fps_underperform_ratio(0.70),
+// //             transition_smoothing(0.3) 
+// //         {}
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Weight history entry (for thesis plots)
+// //     // --------------------------------------------------------
+// //     struct WeightHistoryEntry {
+// //         int generation;
+// //         SystemRegime regime;
+// //         std::array<double, 4> weights;   // [fps, power, temp, latency]
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Constructor 
+// //     // --------------------------------------------------------
+// //     explicit AdaptiveWeightManager(Config cfg = Config())
+// //         : cfg_(cfg)
+// //     {
+// //         current_weights_ = getProfileWeights(SystemRegime::NOMINAL);
+// //         target_weights_  = current_weights_;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Main update  call every GA generation
+// //     // --------------------------------------------------------
+// //     bool update(const MetricsSnapshot& snap, int current_generation, double target_fps) {
+// //         if (current_generation % cfg_.update_interval_gens != 0) {
+// //             return false;
+// //         }
+
+// //         SystemRegime new_regime = force_regime_ 
+// //             ? forced_regime_ 
+// //             : classifyRegime(snap, target_fps);
+
+// //         bool changed = (new_regime != current_regime_);
+
+// //         if (changed) {
+// //             spdlog::info("[AdaptiveWeightManager] Regime transition: {} -> {} (gen={})",
+// //                          regimeToString(current_regime_),
+// //                          regimeToString(new_regime),
+// //                          current_generation);
+// //             current_regime_ = new_regime;
+// //         }
+
+// //         target_weights_ = getProfileWeights(current_regime_);
+// //         smoothTransition();
+
+// //         weight_history_.push_back({current_generation, current_regime_, current_weights_});
+// //         if (weight_history_.size() > MAX_HISTORY) {
+// //             weight_history_.pop_front();
+// //         }
+
+// //         return changed;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Accessors
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getWeights() const { return current_weights_; }
+// //     SystemRegime getCurrentRegime() const { return current_regime_; }
+// //     std::string getCurrentRegimeName() const { return regimeToString(current_regime_); }
+// //     const std::deque<WeightHistoryEntry>& getWeightHistory() const { return weight_history_; }
+
+// //     // --------------------------------------------------------
+// //     // Forced regime control (for ablation studies)
+// //     // --------------------------------------------------------
+// //     void forceRegime(SystemRegime regime) {
+// //         force_regime_ = true;
+// //         forced_regime_ = regime;
+// //         spdlog::info("[AdaptiveWeightManager] Regime FORCED to {}", regimeToString(regime));
+// //     }
+
+// //     void clearForceRegime() {
+// //         force_regime_ = false;
+// //         spdlog::info("[AdaptiveWeightManager] Forced regime cleared  resuming auto detection");
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // CSV export for thesis
+// //     // --------------------------------------------------------
+// //     std::string exportHistoryCSV() const {
+// //         std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency\n";
+// //         for (const auto& entry : weight_history_) {
+// //             csv += std::to_string(entry.generation) + "," 
+// //                 + regimeToString(entry.regime) + ","
+// //                 + std::to_string(entry.weights[0]) + ","
+// //                 + std::to_string(entry.weights[1]) + ","
+// //                 + std::to_string(entry.weights[2]) + ","
+// //                 + std::to_string(entry.weights[3]) + "\n";
+// //         }
+// //         return csv;
+// //     }
+
+// // private:
+// //     Config cfg_;
+// //     SystemRegime current_regime_ = SystemRegime::NOMINAL;
+// //     std::array<double, 4> current_weights_ = {0.50, 0.20, 0.20, 0.10};
+// //     std::array<double, 4> target_weights_  = {0.50, 0.20, 0.20, 0.10};
+
+// //     bool force_regime_ = false;
+// //     SystemRegime forced_regime_ = SystemRegime::NOMINAL;
+
+// //     std::deque<WeightHistoryEntry> weight_history_;
+// //     static constexpr size_t MAX_HISTORY = 100;
+
+// //     SystemRegime classifyRegime(const MetricsSnapshot& snap, double target_fps) const {
+// //         if (snap.cpu_temp_c > cfg_.thermal_crit_cpu_c || snap.gpu_temp_c > cfg_.thermal_crit_gpu_c)
+// //             return SystemRegime::THERMAL_CRITICAL;
+
+// //         if (snap.avg_power_w_alg > cfg_.battery_critical_watts)
+// //             return SystemRegime::BATTERY_CRITICAL;
+
+// //         if (snap.cpu_temp_c > cfg_.thermal_warn_cpu_c || snap.gpu_temp_c > cfg_.thermal_warn_gpu_c)
+// //             return SystemRegime::THERMAL_WARNING;
+
+// //         if (snap.avg_latency_ms > cfg_.latency_sla_ms)
+// //             return SystemRegime::LATENCY_SLA;
+
+// //         if (target_fps > 0.0 && snap.fps < cfg_.fps_underperform_ratio * target_fps)
+// //             return SystemRegime::HIGH_PERFORMANCE;
+
+// //         return SystemRegime::NOMINAL;
+// //     }
+
+// //     std::array<double, 4> getProfileWeights(SystemRegime regime) const {
+// //         switch (regime) {
+// //             case SystemRegime::BATTERY_CRITICAL:   return {0.25, 0.50, 0.15, 0.10};
+// //             case SystemRegime::THERMAL_WARNING:    return {0.35, 0.15, 0.40, 0.10};
+// //             case SystemRegime::THERMAL_CRITICAL:   return {0.20, 0.10, 0.60, 0.10};
+// //             case SystemRegime::LATENCY_SLA:        return {0.30, 0.15, 0.15, 0.40};
+// //             case SystemRegime::HIGH_PERFORMANCE:   return {0.65, 0.15, 0.15, 0.05};
+// //             case SystemRegime::NOMINAL:
+// //             default:                               return {0.50, 0.20, 0.20, 0.10};
+// //         }
+// //     }
+
+// //     void smoothTransition() {
+// //         for (int i = 0; i < 4; ++i) {
+// //             current_weights_[i] = (1.0 - cfg_.transition_smoothing) * current_weights_[i]
+// //                                 + cfg_.transition_smoothing * target_weights_[i];
+// //         }
+
+// //         double sum = 0.0;
+// //         for (double w : current_weights_) sum += w;
+// //         if (sum > 0.0) {
+// //             for (auto& w : current_weights_) w /= sum;
+// //         }
+// //     }
+
+// //     static std::string regimeToString(SystemRegime r) {
+// //         switch (r) {
+// //             case SystemRegime::NOMINAL:           return "NOMINAL";
+// //             case SystemRegime::BATTERY_CRITICAL:  return "BATTERY_CRITICAL";
+// //             case SystemRegime::THERMAL_WARNING:   return "THERMAL_WARNING";
+// //             case SystemRegime::THERMAL_CRITICAL:  return "THERMAL_CRITICAL";
+// //             case SystemRegime::LATENCY_SLA:       return "LATENCY_SLA";
+// //             case SystemRegime::HIGH_PERFORMANCE:  return "HIGH_PERFORMANCE";
+// //             default:                              return "UNKNOWN";
+// //         }
+// //     }
+// // };
+
+// // } // namespace hrl
+
+// //=======================================================================================================================================
+// // // ============================================================
+// // // AdaptiveWeightManager.h
+// // // PhD Priority 2: Context-Sensitive Meta-Controller for
+// // // Scalarisation Weights in Online Multi-Objective GA
+// // // ============================================================
+
+// // #pragma once
+
+// // #include <array>
+// // #include <deque>
+// // #include <string>
+// // #include <vector>
+// // #include <spdlog/spdlog.h>
+// // #include "RuntimeControls.h"   // for MetricsSnapshot
+
+// // namespace hrl {
+
+// // // ============================================================
+// // // System Regime Classification
+// // // ============================================================
+// // enum class SystemRegime {
+// //     NOMINAL,           // Normal operation
+// //     BATTERY_CRITICAL,  // Power severely constrained
+// //     THERMAL_WARNING,   // Approaching thermal limits
+// //     THERMAL_CRITICAL,  // Emergency thermal state
+// //     LATENCY_SLA,       // Latency SLA violation
+// //     HIGH_PERFORMANCE   // Need to push FPS
+// // };
+
+// // // ============================================================
+// // // Weight Profile per regime
+// // // ============================================================
+// // struct WeightProfile {
+// //     double w_fps;
+// //     double w_power;
+// //     double w_temp;
+// //     double w_latency;
+// //     std::string name;
+// // };
+
+// // // ============================================================
+// // // AdaptiveWeightManager
+// // // ============================================================
+// // class AdaptiveWeightManager {
+// // public:
+// //     // --------------------------------------------------------
+// //     // Configuration
+// //     // --------------------------------------------------------
+// //     struct Config {
+// //         int    update_interval_gens     = 5;      // Re-evaluate every N generations
+// //         double battery_critical_watts   = 8.0;
+// //         double thermal_warn_cpu_c       = 75.0;
+// //         double thermal_warn_gpu_c       = 78.0;
+// //         double thermal_crit_cpu_c       = 80.0;
+// //         double thermal_crit_gpu_c       = 83.0;
+// //         double latency_sla_ms           = 45.0;
+// //         double fps_underperform_ratio   = 0.70;
+// //         double transition_smoothing     = 0.3;    // EMA factor
+
+// //         // Explicit default constructor (required for default parameter)
+// //         Config() = default;
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Weight history entry (for thesis plots)
+// //     // --------------------------------------------------------
+// //     struct WeightHistoryEntry {
+// //         int generation;
+// //         SystemRegime regime;
+// //         std::array<double, 4> weights;   // [fps, power, temp, latency]
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // Constructor  Fixed default parameter
+// //     // --------------------------------------------------------
+// //     explicit AdaptiveWeightManager(Config cfg = Config())
+// //         : cfg_(cfg)
+// //     {
+// //         current_weights_ = getProfileWeights(SystemRegime::NOMINAL);
+// //         target_weights_  = current_weights_;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Main update  call every GA generation
+// //     // --------------------------------------------------------
+// //     bool update(const MetricsSnapshot& snap, int current_generation, double target_fps) {
+// //         if (current_generation % cfg_.update_interval_gens != 0) {
+// //             return false;
+// //         }
+
+// //         SystemRegime new_regime = force_regime_ 
+// //             ? forced_regime_ 
+// //             : classifyRegime(snap, target_fps);
+
+// //         bool changed = (new_regime != current_regime_);
+
+// //         if (changed) {
+// //             spdlog::info("[AdaptiveWeightManager] Regime transition: {} ? {} (gen={})",
+// //                          regimeToString(current_regime_),
+// //                          regimeToString(new_regime),
+// //                          current_generation);
+// //             current_regime_ = new_regime;
+// //         }
+
+// //         target_weights_ = getProfileWeights(current_regime_);
+// //         smoothTransition();
+
+// //         weight_history_.push_back({current_generation, current_regime_, current_weights_});
+// //         if (weight_history_.size() > MAX_HISTORY) {
+// //             weight_history_.pop_front();
+// //         }
+
+// //         return changed;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Accessors
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getWeights() const { return current_weights_; }
+// //     SystemRegime getCurrentRegime() const { return current_regime_; }
+// //     std::string getCurrentRegimeName() const { return regimeToString(current_regime_); }
+
+// //     const std::deque<WeightHistoryEntry>& getWeightHistory() const { return weight_history_; }
+
+// //     // --------------------------------------------------------
+// //     // Forced regime control (for ablation studies)
+// //     // --------------------------------------------------------
+// //     void forceRegime(SystemRegime regime) {
+// //         force_regime_ = true;
+// //         forced_regime_ = regime;
+// //         spdlog::info("[AdaptiveWeightManager] Regime FORCED to {}", regimeToString(regime));
+// //     }
+
+// //     void clearForceRegime() {
+// //         force_regime_ = false;
+// //         spdlog::info("[AdaptiveWeightManager] Forced regime cleared  resuming auto detection");
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // CSV export for thesis
+// //     // --------------------------------------------------------
+// //     std::string exportHistoryCSV() const {
+// //         std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency\n";
+// //         for (const auto& entry : weight_history_) {
+// //             csv += std::to_string(entry.generation) + "," 
+// //                 + regimeToString(entry.regime) + ","
+// //                 + std::to_string(entry.weights[0]) + ","
+// //                 + std::to_string(entry.weights[1]) + ","
+// //                 + std::to_string(entry.weights[2]) + ","
+// //                 + std::to_string(entry.weights[3]) + "\n";
+// //         }
+// //         return csv;
+// //     }
+
+// // private:
+// //     Config cfg_;
+// //     SystemRegime current_regime_ = SystemRegime::NOMINAL;
+// //     std::array<double, 4> current_weights_ = {0.50, 0.20, 0.20, 0.10};
+// //     std::array<double, 4> target_weights_  = {0.50, 0.20, 0.20, 0.10};
+
+// //     bool force_regime_ = false;
+// //     SystemRegime forced_regime_ = SystemRegime::NOMINAL;
+
+// //     std::deque<WeightHistoryEntry> weight_history_;
+// //     static constexpr size_t MAX_HISTORY = 100;
+
+// //     // --------------------------------------------------------
+// //     // Regime Classification
+// //     // --------------------------------------------------------
+// //     SystemRegime classifyRegime(const MetricsSnapshot& snap, double target_fps) const {
+// //         if (snap.cpu_temp_c > cfg_.thermal_crit_cpu_c || snap.gpu_temp_c > cfg_.thermal_crit_gpu_c)
+// //             return SystemRegime::THERMAL_CRITICAL;
+
+// //         if (snap.avg_power_w_alg > cfg_.battery_critical_watts)
+// //             return SystemRegime::BATTERY_CRITICAL;
+
+// //         if (snap.cpu_temp_c > cfg_.thermal_warn_cpu_c || snap.gpu_temp_c > cfg_.thermal_warn_gpu_c)
+// //             return SystemRegime::THERMAL_WARNING;
+
+// //         if (snap.avg_latency_ms > cfg_.latency_sla_ms)
+// //             return SystemRegime::LATENCY_SLA;
+
+// //         if (target_fps > 0.0 && snap.fps < cfg_.fps_underperform_ratio * target_fps)
+// //             return SystemRegime::HIGH_PERFORMANCE;
+
+// //         return SystemRegime::NOMINAL;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Weight profiles (must sum to 1.0)
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getProfileWeights(SystemRegime regime) const {
+// //         switch (regime) {
+// //             case SystemRegime::BATTERY_CRITICAL:   return {0.25, 0.50, 0.15, 0.10};
+// //             case SystemRegime::THERMAL_WARNING:    return {0.35, 0.15, 0.40, 0.10};
+// //             case SystemRegime::THERMAL_CRITICAL:   return {0.20, 0.10, 0.60, 0.10};
+// //             case SystemRegime::LATENCY_SLA:        return {0.30, 0.15, 0.15, 0.40};
+// //             case SystemRegime::HIGH_PERFORMANCE:   return {0.65, 0.15, 0.15, 0.05};
+// //             case SystemRegime::NOMINAL:
+// //             default:                               return {0.50, 0.20, 0.20, 0.10};
+// //         }
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // EMA smoothing
+// //     // --------------------------------------------------------
+// //     void smoothTransition() {
+// //         for (int i = 0; i < 4; ++i) {
+// //             current_weights_[i] = (1.0 - cfg_.transition_smoothing) * current_weights_[i]
+// //                                 + cfg_.transition_smoothing * target_weights_[i];
+// //         }
+
+// //         double sum = 0.0;
+// //         for (double w : current_weights_) sum += w;
+// //         if (sum > 0.0) {
+// //             for (auto& w : current_weights_) w /= sum;
+// //         }
+// //     }
+
+// //     static std::string regimeToString(SystemRegime r) {
+// //         switch (r) {
+// //             case SystemRegime::NOMINAL:           return "NOMINAL";
+// //             case SystemRegime::BATTERY_CRITICAL:  return "BATTERY_CRITICAL";
+// //             case SystemRegime::THERMAL_WARNING:   return "THERMAL_WARNING";
+// //             case SystemRegime::THERMAL_CRITICAL:  return "THERMAL_CRITICAL";
+// //             case SystemRegime::LATENCY_SLA:       return "LATENCY_SLA";
+// //             case SystemRegime::HIGH_PERFORMANCE:  return "HIGH_PERFORMANCE";
+// //             default:                              return "UNKNOWN";
+// //         }
+// //     }
+// // };
+
+// // } // namespace hrl
+
+
+// //================================================================================================================================================
+// // // ============================================================
+// // // AdaptiveWeightManager.h
+// // // FIXED VERSION  COMPILATION SAFE + PRODUCTION READY
+// // // ============================================================
+
+// // #pragma once
+
+// // #include <array>
+// // #include <deque>
+// // #include <string>
+// // #include <vector>
+// // #include <spdlog/spdlog.h>
+// // #include "RuntimeControls.h"
+
+// // namespace hrl {
+
+// // // ============================================================
+// // // System Regime Classification
+// // // ============================================================
+// // enum class SystemRegime {
+// //     NOMINAL,
+// //     BATTERY_CRITICAL,
+// //     THERMAL_WARNING,
+// //     THERMAL_CRITICAL,
+// //     LATENCY_SLA,
+// //     HIGH_PERFORMANCE
+// // };
+
+// // // ============================================================
+// // // Weight Profile
+// // // ============================================================
+// // struct WeightProfile {
+// //     double w_fps;
+// //     double w_power;
+// //     double w_temp;
+// //     double w_latency;
+// //     std::string name;
+// // };
+
+// // // ============================================================
+// // // AdaptiveWeightManager
+// // // ============================================================
+// // class AdaptiveWeightManager {
+// // public:
+
+// //     // --------------------------------------------------------
+// //     // Config
+// //     // --------------------------------------------------------
+// //     struct Config {
+// //         int    update_interval_gens   = 5;
+// //         double battery_critical_watts = 8.0;
+// //         double thermal_warn_cpu_c     = 75.0;
+// //         double thermal_warn_gpu_c     = 78.0;
+// //         double thermal_crit_cpu_c     = 80.0;
+// //         double thermal_crit_gpu_c     = 83.0;
+// //         double latency_sla_ms         = 45.0;
+// //         double fps_underperform_ratio = 0.70;
+// //         double transition_smoothing   = 0.3;
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // History Entry
+// //     // --------------------------------------------------------
+// //     struct WeightHistoryEntry {
+// //         int generation;
+// //         SystemRegime regime;
+// //         std::array<double, 4> weights;
+// //     };
+
+// //     // --------------------------------------------------------
+// //     // ? FIXED CONSTRUCTOR (ROOT FIX HERE)
+// //     // --------------------------------------------------------
+// //     explicit AdaptiveWeightManager(Config cfg = {})
+// //         : cfg_(cfg)
+// //     {
+// //         current_weights_ = getProfileWeights(SystemRegime::NOMINAL);
+// //         target_weights_  = current_weights_;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Update
+// //     // --------------------------------------------------------
+// //     bool update(const MetricsSnapshot& snap, int current_generation, double target_fps)
+// //     {
+// //         if (cfg_.update_interval_gens <= 0) return false;
+
+// //         if (current_generation % cfg_.update_interval_gens != 0)
+// //             return false;
+
+// //         SystemRegime new_regime = force_regime_
+// //             ? forced_regime_
+// //             : classifyRegime(snap, target_fps);
+
+// //         bool changed = (new_regime != current_regime_);
+
+// //         if (changed) {
+// //             spdlog::info("[AdaptiveWeightManager] Regime transition: {} -> {} (gen={})",
+// //                          regimeToString(current_regime_),
+// //                          regimeToString(new_regime),
+// //                          current_generation);
+// //             current_regime_ = new_regime;
+// //         }
+
+// //         target_weights_ = getProfileWeights(current_regime_);
+// //         smoothTransition();
+
+// //         weight_history_.push_back({current_generation, current_regime_, current_weights_});
+// //         if (weight_history_.size() > MAX_HISTORY)
+// //             weight_history_.pop_front();
+
+// //         return changed;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Accessors
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getWeights() const { return current_weights_; }
+// //     SystemRegime getCurrentRegime() const { return current_regime_; }
+// //     std::string getCurrentRegimeName() const { return regimeToString(current_regime_); }
+// //     const std::deque<WeightHistoryEntry>& getWeightHistory() const { return weight_history_; }
+
+// //     // --------------------------------------------------------
+// //     // Forced Regime
+// //     // --------------------------------------------------------
+// //     void forceRegime(SystemRegime regime)
+// //     {
+// //         force_regime_ = true;
+// //         forced_regime_ = regime;
+// //         spdlog::info("[AdaptiveWeightManager] Regime FORCED to {}", regimeToString(regime));
+// //     }
+
+// //     void clearForceRegime()
+// //     {
+// //         force_regime_ = false;
+// //         spdlog::info("[AdaptiveWeightManager] Forced regime cleared");
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // CSV Export
+// //     // --------------------------------------------------------
+// //     std::string exportHistoryCSV() const
+// //     {
+// //         std::string csv = "generation,regime,w_fps,w_power,w_temp,w_latency\n";
+
+// //         for (const auto& entry : weight_history_) {
+// //             csv += std::to_string(entry.generation) + "," +
+// //                    regimeToString(entry.regime) + "," +
+// //                    std::to_string(entry.weights[0]) + "," +
+// //                    std::to_string(entry.weights[1]) + "," +
+// //                    std::to_string(entry.weights[2]) + "," +
+// //                    std::to_string(entry.weights[3]) + "\n";
+// //         }
+
+// //         return csv;
+// //     }
+
+// // private:
+
+// //     Config cfg_;
+
+// //     SystemRegime current_regime_ = SystemRegime::NOMINAL;
+
+// //     std::array<double, 4> current_weights_ = {0.50, 0.20, 0.20, 0.10};
+// //     std::array<double, 4> target_weights_  = {0.50, 0.20, 0.20, 0.10};
+
+// //     bool force_regime_ = false;
+// //     SystemRegime forced_regime_ = SystemRegime::NOMINAL;
+
+// //     std::deque<WeightHistoryEntry> weight_history_;
+// //     static constexpr size_t MAX_HISTORY = 100;
+
+// //     // --------------------------------------------------------
+// //     // Regime Classification
+// //     // --------------------------------------------------------
+// //     SystemRegime classifyRegime(const MetricsSnapshot& snap, double target_fps) const
+// //     {
+// //         if (snap.cpu_temp_c > cfg_.thermal_crit_cpu_c ||
+// //             snap.gpu_temp_c > cfg_.thermal_crit_gpu_c)
+// //             return SystemRegime::THERMAL_CRITICAL;
+
+// //         if (snap.avg_power_w_alg > cfg_.battery_critical_watts)
+// //             return SystemRegime::BATTERY_CRITICAL;
+
+// //         if (snap.cpu_temp_c > cfg_.thermal_warn_cpu_c ||
+// //             snap.gpu_temp_c > cfg_.thermal_warn_gpu_c)
+// //             return SystemRegime::THERMAL_WARNING;
+
+// //         if (snap.avg_latency_ms > cfg_.latency_sla_ms)
+// //             return SystemRegime::LATENCY_SLA;
+
+// //         if (target_fps > 0.0 &&
+// //             snap.fps < cfg_.fps_underperform_ratio * target_fps)
+// //             return SystemRegime::HIGH_PERFORMANCE;
+
+// //         return SystemRegime::NOMINAL;
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // Weight Profiles
+// //     // --------------------------------------------------------
+// //     std::array<double, 4> getProfileWeights(SystemRegime regime) const
+// //     {
+// //         switch (regime) {
+// //             case SystemRegime::BATTERY_CRITICAL: return {0.25, 0.50, 0.15, 0.10};
+// //             case SystemRegime::THERMAL_WARNING:  return {0.35, 0.15, 0.40, 0.10};
+// //             case SystemRegime::THERMAL_CRITICAL: return {0.20, 0.10, 0.60, 0.10};
+// //             case SystemRegime::LATENCY_SLA:      return {0.30, 0.15, 0.15, 0.40};
+// //             case SystemRegime::HIGH_PERFORMANCE: return {0.65, 0.15, 0.15, 0.05};
+// //             case SystemRegime::NOMINAL:
+// //             default:                             return {0.50, 0.20, 0.20, 0.10};
+// //         }
+// //     }
+
+// //     // --------------------------------------------------------
+// //     // EMA Smoothing
+// //     // --------------------------------------------------------
+// //     void smoothTransition()
+// //     {
+// //         const double alpha = cfg_.transition_smoothing;
+
+// //         for (size_t i = 0; i < current_weights_.size(); ++i) {
+// //             current_weights_[i] =
+// //                 (1.0 - alpha) * current_weights_[i] +
+// //                 alpha * target_weights_[i];
+// //         }
+
+// //         // Normalize
+// //         double sum = 0.0;
+// //         for (double w : current_weights_) sum += w;
+
+// //         if (sum > 0.0) {
+// //             for (auto& w : current_weights_)
+// //                 w /= sum;
+// //         }
+// //     }
+
+// //     static std::string regimeToString(SystemRegime r)
+// //     {
+// //         switch (r) {
+// //             case SystemRegime::NOMINAL:          return "NOMINAL";
+// //             case SystemRegime::BATTERY_CRITICAL: return "BATTERY_CRITICAL";
+// //             case SystemRegime::THERMAL_WARNING:  return "THERMAL_WARNING";
+// //             case SystemRegime::THERMAL_CRITICAL: return "THERMAL_CRITICAL";
+// //             case SystemRegime::LATENCY_SLA:      return "LATENCY_SLA";
+// //             case SystemRegime::HIGH_PERFORMANCE: return "HIGH_PERFORMANCE";
+// //             default:                             return "UNKNOWN";
+// //         }
+// //     }
+// // };
+
+// // } // namespace hrl

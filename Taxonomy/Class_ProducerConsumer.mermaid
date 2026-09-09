@@ -1,0 +1,78 @@
+classDiagram
+    class SharedQueue {
+        +SharedQueue(size_t maxSize = 0)
+        +void push(T item)
+        +bool pop(T& item)
+        +void stop()
+        +size_t size() const
+        +bool isStopped() const
+        -std::mutex mutex_
+        -std::condition_variable condNotEmpty_
+        -std::condition_variable condNotFull_
+        -std::queue<T> queue_
+        -bool stop_
+        -size_t maxSize_
+    }
+
+    class DataConcrete {
+        +bool openDevice(string devicePath)
+        +bool configure(CameraConfig config)
+        +bool startStreaming()
+        +bool stopStreaming()
+        +bool dequeFrame(void*& data, size_t& sizeBytes)
+        +void resetDevice()
+        -std::mutex mutex_
+        -bool streaming_
+    }
+
+    class AlgorithmConcrete {
+        +bool processFrame(FrameData frame)
+        -std::mutex processingMutex_
+    }
+
+    class CameraConfig {
+        +int width
+        +int height
+        +int fps
+        +string pixelFormat
+    }
+
+    class FrameData {
+        +void* data
+        +size_t size
+        +uint64_t timestamp
+    }
+
+    DataConcrete --> SharedQueue : "Pushes Frames"
+    SharedQueue --> AlgorithmConcrete : "Pops Frames"
+    AlgorithmConcrete --> FrameData : "Processes Frame Data"
+    DataConcrete --> CameraConfig : "Uses Camera Configuration"
+
+
+sequenceDiagram
+    participant CameraDevice
+    participant DataConcrete as Producer (DataConcrete)
+    participant SharedQueue as Thread-Safe Queue
+    participant AlgorithmConcrete as Consumer (AlgorithmConcrete)
+    participant ProcessedData
+
+    CameraDevice ->> DataConcrete: Capture Frame
+    DataConcrete ->> SharedQueue: push(frame)
+    SharedQueue -->> AlgorithmConcrete: pop(frame)
+    AlgorithmConcrete ->> ProcessedData: processFrame(frame)
+    
+    %% Error Handling
+    DataConcrete ->> DataConcrete: Check if Streaming Active
+    alt Streaming Not Active
+        DataConcrete ->> System: Log Error "Streaming Not Active"
+    end
+
+    SharedQueue ->> SharedQueue: Check if Empty
+    alt Queue Empty
+        SharedQueue ->> AlgorithmConcrete: Consumer Waits
+    end
+
+    AlgorithmConcrete ->> AlgorithmConcrete: Validate Frame Data
+    alt Invalid Frame Data
+        AlgorithmConcrete ->> System: Log Error "Frame Processing Failed"
+    end

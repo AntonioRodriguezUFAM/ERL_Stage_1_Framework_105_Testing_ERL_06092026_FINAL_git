@@ -1,0 +1,100 @@
+nsorosa@jetson:~/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_40/LynsynDevice$ g++ -std=c++14 -o lynsyn_test main.cpp LynsynDevice.cpp -lusb-1.0 -lpthread
+In file included from LynsynDevice.h:30,
+                 from main.cpp:7:
+usbprotocol.h:97:21: error: expected unqualified-id before numeric constant
+   97 | #define MAX_SAMPLES 32
+      |                     ^~
+LynsynDevice.h:217:27: note: in expansion of macro ‘MAX_SAMPLES’
+  217 |     static const unsigned MAX_SAMPLES = 32;
+      |                           ^~~~~~~~~~~
+usbprotocol.h:92:27: error: expected unqualified-id before numeric constant
+   92 | #define SHIFT_BUFFER_SIZE 1024
+      |                           ^~~~
+LynsynDevice.h:218:27: note: in expansion of macro ‘SHIFT_BUFFER_SIZE’
+  218 |     static const unsigned SHIFT_BUFFER_SIZE = 1024;
+      |                           ^~~~~~~~~~~~~~~~~
+In file included from LynsynDevice.h:30,
+                 from LynsynDevice.cpp:10:
+usbprotocol.h:97:21: error: expected unqualified-id before numeric constant
+   97 | #define MAX_SAMPLES 32
+      |                     ^~
+LynsynDevice.h:217:27: note: in expansion of macro ‘MAX_SAMPLES’
+  217 |     static const unsigned MAX_SAMPLES = 32;
+      |                           ^~~~~~~~~~~
+usbprotocol.h:92:27: error: expected unqualified-id before numeric constant
+   92 | #define SHIFT_BUFFER_SIZE 1024
+      |                           ^~~~
+LynsynDevice.h:218:27: note: in expansion of macro ‘SHIFT_BUFFER_SIZE’
+  218 |     static const unsigned SHIFT_BUFFER_SIZE = 1024;
+      |                           ^~~~~~~~~~~~~~~~~
+LynsynDevice.cpp: In function ‘void logError(const string&)’:
+LynsynDevice.cpp:20:10: error: ‘cerr’ is not a member of ‘std’
+   20 |     std::cerr << "[LynsynDevice] Error: " << msg << std::endl;
+      |          ^~~~
+LynsynDevice.cpp:16:1: note: ‘std::cerr’ is defined in header ‘<iostream>’; did you forget to ‘#include <iostream>’?
+   15 | #include <cmath>      // For math in calibration/max current
+  +++ |+#include <iostream>
+   16 | 
+LynsynDevice.cpp:20:58: error: ‘endl’ is not a member of ‘std’
+   20 |     std::cerr << "[LynsynDevice] Error: " << msg << std::endl;
+      |                                                          ^~~~
+LynsynDevice.cpp:16:1: note: ‘std::endl’ is defined in header ‘<ostream>’; did you forget to ‘#include <ostream>’?
+   15 | #include <cmath>      // For math in calibration/max current
+  +++ |+#include <ostream>
+   16 | 
+LynsynDevice.cpp: In member function ‘double LynsynDevice::getCurrent(int16_t, int) const’:
+LynsynDevice.cpp:418:46: error: ‘LYNSYN_REF_VOLTAGE’ was not declared in this scope
+  418 |     double v = (((double)current - offset) * LYNSYN_REF_VOLTAGE / LYNSYN_MAX_SENSOR_VALUE) * gain;
+      |                                              ^~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp:418:67: error: ‘LYNSYN_MAX_SENSOR_VALUE’ was not declared in this scope; did you mean ‘LYNSYN_MAX_SENSORS’?
+  418 |     double v = (((double)current - offset) * LYNSYN_REF_VOLTAGE / LYNSYN_MAX_SENSOR_VALUE) * gain;
+      |                                                                   ^~~~~~~~~~~~~~~~~~~~~~~
+      |                                                                   LYNSYN_MAX_SENSORS
+LynsynDevice.cpp:420:44: error: ‘CURRENT_SENSOR_GAIN_V3_1’ was not declared in this scope
+  420 |     if (hwVer_ >= HW_VERSION_3_1) vs = v / CURRENT_SENSOR_GAIN_V3_1;
+      |                                            ^~~~~~~~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp:421:49: error: ‘CURRENT_SENSOR_GAIN_V3’ was not declared in this scope
+  421 |     else if (hwVer_ == HW_VERSION_3_0) vs = v / CURRENT_SENSOR_GAIN_V3;
+      |                                                 ^~~~~~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp:422:19: error: ‘CURRENT_SENSOR_GAIN_V2’ was not declared in this scope
+  422 |     else vs = v / CURRENT_SENSOR_GAIN_V2;
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp: In member function ‘double LynsynDevice::getVoltage(int16_t, int) const’:
+LynsynDevice.cpp:434:46: error: ‘LYNSYN_REF_VOLTAGE’ was not declared in this scope
+  434 |     double v = (((double)voltage - offset) * LYNSYN_REF_VOLTAGE / LYNSYN_MAX_SENSOR_VALUE) * gain;
+      |                                              ^~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp:434:67: error: ‘LYNSYN_MAX_SENSOR_VALUE’ was not declared in this scope; did you mean ‘LYNSYN_MAX_SENSORS’?
+  434 |     double v = (((double)voltage - offset) * LYNSYN_REF_VOLTAGE / LYNSYN_MAX_SENSOR_VALUE) * gain;
+      |                                                                   ^~~~~~~~~~~~~~~~~~~~~~~
+      |                                                                   LYNSYN_MAX_SENSORS
+LynsynDevice.cpp:435:17: error: ‘VOLTAGE_DIVIDER_R1’ was not declared in this scope
+  435 |     return v * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / VOLTAGE_DIVIDER_R2;
+      |                 ^~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp:435:38: error: ‘VOLTAGE_DIVIDER_R2’ was not declared in this scope
+  435 |     return v * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / VOLTAGE_DIVIDER_R2;
+      |                                      ^~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp: In member function ‘double LynsynDevice::getMaxCurrent(double) const’:
+LynsynDevice.cpp:486:16: error: ‘CURRENT_SENSOR_FACTOR_V3_1’ was not declared in this scope
+  486 |         return CURRENT_SENSOR_FACTOR_V3_1 / rl;
+      |                ^~~~~~~~~~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp:488:16: error: ‘CURRENT_SENSOR_FACTOR_V3’ was not declared in this scope
+  488 |         return CURRENT_SENSOR_FACTOR_V3 / rl;
+      |                ^~~~~~~~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp:490:16: error: ‘CURRENT_SENSOR_FACTOR_V2’ was not declared in this scope
+  490 |         return CURRENT_SENSOR_FACTOR_V2 / rl;
+      |                ^~~~~~~~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp: In member function ‘double LynsynDevice::getMaxVoltage() const’:
+LynsynDevice.cpp:496:12: error: ‘LYNSYN_REF_VOLTAGE’ was not declared in this scope
+  496 |     return LYNSYN_REF_VOLTAGE * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / VOLTAGE_DIVIDER_R2;
+      |            ^~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp:496:34: error: ‘VOLTAGE_DIVIDER_R1’ was not declared in this scope
+  496 |     return LYNSYN_REF_VOLTAGE * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / VOLTAGE_DIVIDER_R2;
+      |                                  ^~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp:496:55: error: ‘VOLTAGE_DIVIDER_R2’ was not declared in this scope
+  496 |     return LYNSYN_REF_VOLTAGE * (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2) / VOLTAGE_DIVIDER_R2;
+      |                                                       ^~~~~~~~~~~~~~~~~~
+LynsynDevice.cpp: In member function ‘char* LynsynDevice::getVersionString(uint8_t) const’:
+LynsynDevice.cpp:502:29: warning: ISO C++ forbids converting a string constant to ‘char*’ [-Wwrite-strings]
+  502 |     if(version == 1) return "1.0";
+      |                             ^~~~~
+ansorosa@jetson:~/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_40/LynsynDevice$ 

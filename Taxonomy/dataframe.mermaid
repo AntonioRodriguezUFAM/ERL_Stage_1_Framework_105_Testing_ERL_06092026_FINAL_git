@@ -1,0 +1,39 @@
+classDiagram
+    class FrameData {
+        +void* data
+        +size_t size
+        +int width
+        +int height
+        +uint64_t timestamp
+        +std::string pixelFormat
+        +int64_t frameNumber
+        +bool isKeyFrame
+    }
+
+sequenceDiagram
+    participant Camera as Camera Device
+    participant DataConcrete as DataConcrete (Captures Frame)
+    participant SharedQueue as SharedQueue (Thread-Safe Buffer)
+    participant Algorithm as AlgorithmConcrete (Processes Frame)
+    
+    Camera ->> DataConcrete: Captures a Frame
+    DataConcrete ->> SharedQueue: Push(FrameData)
+    SharedQueue -->> Algorithm: Pop(FrameData)
+    Algorithm ->> Algorithm: Process FrameData
+    Algorithm ->> SharedQueue: Store Processed Data
+    
+    %% Error Handling
+    DataConcrete ->> DataConcrete: Check if Frame Captured
+    alt Frame Capture Failed
+        DataConcrete ->> System: Log Error "Frame Capture Failed"
+    end
+
+    SharedQueue ->> SharedQueue: Check if Queue is Empty
+    alt Queue Empty
+        SharedQueue ->> Algorithm: Consumer Waits
+    end
+
+    Algorithm ->> Algorithm: Validate FrameData
+    alt Invalid Frame Data
+        Algorithm ->> System: Log Error "Frame Processing Failed"
+    end

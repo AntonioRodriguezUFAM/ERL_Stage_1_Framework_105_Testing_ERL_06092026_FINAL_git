@@ -1,0 +1,59 @@
+sequenceDiagram
+autonumber
+participant Main
+participant Cfg as ConfigManager
+participant ModF as ModuleFactory
+participant Cam as CameraModule
+participant Alg as AlgorithmModule
+participant Dsp as DisplayModule
+participant Soc as SoCModule
+participant Lyn as LynsynModule
+participant Agg as Aggregator V3_2
+participant Ctx as Context
+
+
+Main->>Cfg: ConfigManager("config.json", Ctx)
+Cfg->>Cfg: sanitizeDefaults(cfg)
+Main->>Cfg: buildPipeline()
+Cfg->>Agg: create(aggCfg)
+Cfg->>ModF: create<SoCModule>(...)
+ModF-->>Cfg: unique_ptr<IModule>
+Cfg->>ModF: create<LynsynModule>(...) [if enabled]
+ModF-->>Cfg: unique_ptr<IModule>
+Cfg->>ModF: create<CameraModule>(cam2Alg, cam2Disp, ...)
+Cfg->>ModF: create<AlgorithmModule>(cam2Alg, alg2Disp, ...)
+Cfg->>ModF: create<DisplayModule>(cam2Disp, alg2Disp, ...)
+Main->>Cfg: validateAll()
+Cfg->>Cam: validate()
+Cfg->>Alg: validate()
+Cfg->>Dsp: validate()
+Cfg->>Soc: validate()
+Cfg->>Lyn: validate() [optional]
+Main->>Cfg: startAll()
+Cfg->>Soc: start()
+Cfg->>Lyn: start() [optional]
+Cfg->>Cam: start()
+Cfg->>Alg: start()
+Cfg->>Dsp: start()
+Note over Cam,Alg: Frames flow via SharedQueues
+Note over Soc,Lyn: Metrics/Power sampled
+Cam-->>Agg: camera stats
+Alg-->>Agg: algorithm stats
+Dsp-->>Agg: display stats
+Soc-->>Agg: SoC stats
+Lyn-->>Agg: power stats
+
+
+Main->>Main: runLoop(runSeconds)
+Main-->>Ctx: monitor signals → set shutdown_flag on SIGINT/SIGTERM
+Ctx-->>Cfg: shutdown_flag = true
+
+
+Main->>Cfg: stopAll()
+Cfg->>Dsp: stop()
+Cfg->>Alg: stop()
+Cfg->>Cam: stop()
+Cfg->>Lyn: stop() [optional]
+Cfg->>Soc: stop()
+Main->>Cfg: flushMetrics()
+Cfg->>Agg: stop(); forceFlushBatch(); exportToCSV()

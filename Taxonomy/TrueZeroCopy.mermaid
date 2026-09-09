@@ -1,0 +1,8 @@
+graph LR
+A[Camera Driver] --> B[V4L2 Buffer]
+B --> C[DataConcrete]
+C --> D[Shared_ptr<FrameData>]
+D --> E[Algorithm]
+E -->|Same shared_ptr| F[Display]
+F --> G[Buffer Released]
+G --> H[V4L2 Requeue]

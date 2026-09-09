@@ -1,0 +1,56 @@
+flowchart LR
+subgraph Sources[Frame Sources]
+CAM[CameraModule]
+end
+
+
+subgraph Processing[Processing]
+ALG[AlgorithmModule]
+end
+
+
+subgraph Rendering[Rendering]
+DSP[DisplayModule]
+end
+
+
+subgraph Infra[Infrastructure]
+SOC[SoCModule]
+LYN[LynsynModule]
+AGG[(SystemMetricsAggregator\nV3_2)]
+TM[ThreadManager]
+CTX[Context\nshutdown_flag]
+end
+
+
+%% Queues
+CAM -- cam2Alg --> Q1{{SharedQueue\ncam2Alg}}
+CAM -- cam2Disp --> Q2{{SharedQueue\ncam2Disp}}
+ALG -- alg2Disp --> Q3{{SharedQueue\nalg2Disp}}
+
+
+%% Data paths
+Q1 --> ALG
+Q2 --> DSP
+Q3 --> DSP
+
+
+%% Metrics paths
+CAM -. metrics .-> AGG
+ALG -. metrics .-> AGG
+DSP -. metrics .-> AGG
+SOC -. metrics .-> AGG
+LYN -. power .-> AGG
+
+
+%% Context / control
+TM --- CTX
+CAM --- CTX
+ALG --- CTX
+DSP --- CTX
+SOC --- CTX
+LYN --- CTX
+
+
+%% External
+SIG([SIGINT/SIGTERM]) -->|signal_handler| CTX

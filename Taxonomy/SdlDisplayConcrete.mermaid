@@ -1,0 +1,83 @@
+classDiagram
+    class IDisplay {
+        <<interface>>
+        + bool initializeDisplay(int width, int height)
+        + void updateOriginalFrame(uint8_t* rgbData, int width, int height)
+        + void updateProcessedFrame(uint8_t* rgbData, int width, int height)
+        + void renderAndPollEvents()
+        + void closeDisplay()
+        + void setErrorCallback(void callback(string))
+    }
+
+    class SdlDisplayConcrete {
+        - SDL_Window* window_
+        - SDL_Renderer* renderer_
+        - SDL_Texture* texOrig_
+        - SDL_Texture* texProc_
+        - int displayWidth_
+        - int displayHeight_
+        - bool running_
+        - void (*errorCallback)(string)
+        - vector<uint8_t> processedRGB_
+        - mutex processedMutex_
+        + SdlDisplayConcrete()
+        + ~SdlDisplayConcrete()
+        + bool initializeDisplay(int width, int height)
+        + void updateOriginalFrame(uint8_t* rgbData, int width, int height)
+        + void updateProcessedFrame(uint8_t* rgbData, int width, int height)
+        + void renderAndPollEvents()
+        + void setErrorCallback(void callback(string))
+        + void closeDisplay()
+    }
+
+    IDisplay <|-- SdlDisplayConcrete
+
+
+sequenceDiagram
+    participant Application
+    participant SdlDisplayConcrete
+    participant SDL_Window
+    participant SDL_Renderer
+    participant SDL_Texture
+
+    Application ->> SdlDisplayConcrete: initializeDisplay(width, height)
+    SdlDisplayConcrete ->> SDL_Window: SDL_CreateWindow()
+    SdlDisplayConcrete ->> SDL_Renderer: SDL_CreateRenderer()
+    SdlDisplayConcrete ->> SDL_Texture: SDL_CreateTexture()
+
+    Application ->> SdlDisplayConcrete: updateOriginalFrame(rgbData, width, height)
+    SdlDisplayConcrete ->> SDL_Texture: SDL_UpdateTexture()
+    
+    Application ->> SdlDisplayConcrete: updateProcessedFrame(rgbData, width, height)
+    SdlDisplayConcrete ->> SDL_Texture: SDL_UpdateTexture()
+
+    Application ->> SdlDisplayConcrete: renderAndPollEvents()
+    SdlDisplayConcrete ->> SDL_Renderer: SDL_RenderClear()
+    SdlDisplayConcrete ->> SDL_Renderer: SDL_RenderCopy()
+    SdlDisplayConcrete ->> SDL_Renderer: SDL_RenderPresent()
+    
+    Application ->> SdlDisplayConcrete: closeDisplay()
+    SdlDisplayConcrete ->> SDL_Texture: SDL_DestroyTexture()
+    SdlDisplayConcrete ->> SDL_Renderer: SDL_DestroyRenderer()
+    SdlDisplayConcrete ->> SDL_Window: SDL_DestroyWindow()
+    SdlDisplayConcrete ->> SDL: SDL_Quit()
+
+
+graph TD
+    A[Application] -->|Initialize Display| B(SdlDisplayConcrete)
+    B -->|Create Window| C(SDL_CreateWindow)
+    B -->|Create Renderer| D(SDL_CreateRenderer)
+    B -->|Create Textures| E(SDL_CreateTexture)
+
+    A -->|Update Original Frame| F(SDL_UpdateTexture)
+    A -->|Update Processed Frame| G(SDL_UpdateTexture)
+
+    A -->|Render & Poll Events| H(SDL_RenderClear)
+    H -->|Render Original & Processed Frames| I(SDL_RenderCopy)
+    I -->|Present Rendered Frame| J(SDL_RenderPresent)
+
+    A -->|Close Display| K(SdlDisplayConcrete)
+    K -->|Destroy Textures| L(SDL_DestroyTexture)
+    K -->|Destroy Renderer| M(SDL_DestroyRenderer)
+    K -->|Destroy Window| N(SDL_DestroyWindow)
+    K -->|Quit SDL| O(SDL_Quit)

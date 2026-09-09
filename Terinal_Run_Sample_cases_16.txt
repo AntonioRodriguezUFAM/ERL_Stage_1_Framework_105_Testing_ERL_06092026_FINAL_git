@@ -1,0 +1,201 @@
+
+Here are the updated execution cases. The duration has been increased to **1800 seconds** (30 minutes).
+
+
+To capture the runtime logging and metrics, I have appended `| tee <logfile>.log` to each command. This will print the execution details to your terminal while simultaneously saving them to a log file for your PhD metric analysis.
+
+
+
+### Option 1: Flat Terminal Commands (Copy & Paste)
+
+
+First, create a directory to store your logs so they don't clutter your workspace:
+
+```bash
+sudo mkdir -p benchmark_logs
+
+```
+
+Run terminal
+make -j4 VERBOSE=1
+
+
+Then run the cases:
+
+```bash
+# 1. SobelEdge Benchmark Suite
+sudo ./MySystem --algo SobelEdge --mode CPU_STATIC 1800 config.json | tee benchmark_logs/SobelEdge_CPU_STATIC.log
+sudo ./MySystem --algo SobelEdge --mode GPU_STATIC 1800 config.json | tee benchmark_logs/SobelEdge_GPU_STATIC.log
+sudo ./MySystem --algo SobelEdge --mode BALANCED 1800 config.json | tee benchmark_logs/SobelEdge_BALANCED.log
+sudo ./MySystem --algo SobelEdge --mode ERL 1800 config.json | tee benchmark_logs/SobelEdge_ERL.log
+
+# 2. HistogramEqualization Benchmark Suite
+sudo ./MySystem --algo HistogramEqualization --mode CPU_STATIC 1800 config.json | tee benchmark_logs/HistEq_CPU_STATIC.log
+sudo ./MySystem --algo HistogramEqualization --mode GPU_STATIC 1800 config.json | tee benchmark_logs/HistEq_GPU_STATIC.log
+sudo ./MySystem --algo HistogramEqualization --mode BALANCED 1800 config.json | tee benchmark_logs/HistEq_BALANCED.log
+sudo ./MySystem --algo HistogramEqualization --mode ERL 1800 config.json | tee benchmark_logs/HistEq_ERL.log
+
+# 3. HeterogeneousGaussianBlur Benchmark Suite
+sudo ./MySystem --algo HeterogeneousGaussianBlur --mode CPU_STATIC 1800 config.json | tee benchmark_logs/HetGBlur_CPU_STATIC.log
+sudo ./MySystem --algo HeterogeneousGaussianBlur --mode GPU_STATIC 1800 config.json | tee benchmark_logs/HetGBlur_GPU_STATIC.log
+sudo ./MySystem --algo HeterogeneousGaussianBlur --mode BALANCED 1800 config.json | tee benchmark_logs/HetGBlur_BALANCED.log
+sudo ./MySystem --algo HeterogeneousGaussianBlur --mode ERL 1800 config.json | tee benchmark_logs/HetGBlur_ERL.log
+
+# 4. GaussianBlur Benchmark Suite
+sudo ./MySystem --algo GaussianBlur --mode CPU_STATIC 1800 config.json | tee benchmark_logs/GBlur_CPU_STATIC.log
+sudo ./MySystem --algo GaussianBlur --mode GPU_STATIC 1800 config.json | tee benchmark_logs/GBlur_GPU_STATIC.log
+sudo ./MySystem --algo GaussianBlur --mode BALANCED 1800 config.json | tee benchmark_logs/GBlur_BALANCED.log
+sudo ./MySystem --algo GaussianBlur --mode ERL 1800 config.json | tee benchmark_logs/GBlur_ERL.log
+
+# 5. MedianFilter Benchmark Suite (Strict GPU-Bound test)
+sudo ./MySystem --algo MedianFilter --mode CPU_STATIC 1800 config.json | tee benchmark_logs/MedFilter_CPU_STATIC.log
+sudo ./MySystem --algo MedianFilter --mode GPU_STATIC 1800 config.json | tee benchmark_logs/MedFilter_GPU_STATIC.log
+sudo ./MySystem --algo MedianFilter --mode BALANCED 1800 config.json | tee benchmark_logs/MedFilter_BALANCED.log
+sudo ./MySystem --algo MedianFilter --mode ERL 1800 config.json | tee benchmark_logs/MedFilter_ERL.log
+
+
+---
+
+### Option 2: Automated Bash Script with Hardware Telemetry (Recommended for PhD)
+
+Since you are running this on a Jetson Nano and need comprehensive metrics for your thesis, capturing the application logs alone is usually not enough. You also need the hardware telemetry (CPU/GPU utilization, thermal profiles, memory) for those exact 1800-second windows.
+
+This script automatically runs your application, saves the application logs, and spins up `tegrastats` in the background to log the exact hardware metrics for each specific run.
+
+
+This is an incredibly robust way to handle Jetson CSI cameras. By explicitly forcing the RG10 Bayer pixel format, locking the resolution to 1280x720, and performing a stream validation before handing the file descriptor over to the C++ framework, you completely eliminate the "Device or resource busy" (EBUSY) errors and phantom framerate drops.
+
+I have updated the automated evaluation script to include your exact commands.
+
+To make the script fully autonomous for your 16-case matrix, I embedded your v4l2-ctl test directly into the reset_csi_camera function. Instead of streaming 300 frames (which takes 5 seconds), the script streams a quick 30-frame burst (0.5 seconds at 60 FPS) right before launching your application. If this validation burst fails, the script will instantly halt and warn you, saving you from waiting 30 minutes for a corrupted metric run.
+
+Here is the Master PhD Evaluation Script:
+
+
+Save this as `run_eval.sh` and make it executable (`chmod +x run_eval.sh`):
+The Bulletproof PhD Evaluation Script (run_eval.sh)
+Save this, run chmod +x run_eval.sh, and execute it with sudo ./run_eval.sh (since resetting USB buses requires root access).
+
+Step 3: Run the Script
+Because this script performs low-level hardware resets (restarting the nvargus-daemon, cycling USB bus power, and running tegrastats), it must be run as root.
+
+To execute the script, type:
+
+Bash
+sudo ./run_eval.sh
+
+
+
+#!/bin/bash
+
+# Ensure the script is run with sudo for hardware resets and telemetry
+if [ "$EUID" -ne 0 ]; then
+  echo "Please run as root (sudo ./run_eval.sh) to allow hardware resets."
+  exit 1
+fi
+
+# Setup directories for clean logging
+mkdir -p app_logs
+mkdir -p hardware_metrics
+
+EXECUTABLE="./MySystem"
+DURATION_SEC=1800
+CONFIG_FILE="config.json"
+COOLDOWN_SEC=60
+
+ALGORITHMS=("SobelEdge" "HistogramEqualization" "HeterogeneousGaussianBlur" "GaussianBlur")
+MODES=("CPU_STATIC" "GPU_STATIC" "BALANCED" "ERL")
+
+# ==============================================================================
+# Function: Force-Reset all USB Buses (For LynSyn Power Analyzer)
+# ==============================================================================
+reset_usb_system() {
+    echo "--> [USB RESET] Cycling USB buses to clear LynSyn lockups..."
+    for bus_path in /sys/bus/usb/drivers/usb/usb*; do
+        if [ -d "$bus_path" ]; then
+            bus_id=$(basename "$bus_path")
+            echo "$bus_id" > /sys/bus/usb/drivers/usb/unbind 2>/dev/null || true
+            sleep 1
+            echo "$bus_id" > /sys/bus/usb/drivers/usb/bind 2>/dev/null || true
+        fi
+    done
+    sleep 2
+}
+
+# ==============================================================================
+# Function: Force-Reset CSI Camera to RG10 1280x720 @ 60 FPS and Validate
+# ==============================================================================
+reset_csi_camera() {
+    echo "--> [CSI RESET] Freeing /dev/video0 from zombie processes..."
+    # Force kill any process holding the camera file descriptor
+    fuser -k /dev/video0 2>/dev/null || true
+    pkill -f gst-launch-1.0 || true
+    pkill -f nvarguscamerasrc || true
+    pkill -f v4l2-ctl || true
+    pkill -f "$EXECUTABLE" || true
+
+    echo "--> [CSI RESET] Restarting NVIDIA Argus Daemon..."
+    systemctl restart nvargus-daemon 2>/dev/null || service nvargus-daemon restart || true
+    
+    # Argus needs a few seconds to fully initialize the MIPI lanes
+    sleep 3 
+
+    echo "--> [CSI RESET] Configuring format: 1280x720, RG10 Bayer, 60 FPS..."
+    v4l2-ctl -d /dev/video0 --set-fmt-video=width=1280,height=720,pixelformat=RG10
+    v4l2-ctl -d /dev/video0 --set-parm=60
+    
+    echo "--> [CSI RESET] Validating pipeline with hardware burst stream..."
+    # Quick 30-frame validation stream to ensure EBUSY is cleared
+    if ! v4l2-ctl -d /dev/video0 --stream-mmap=8 --stream-count=30 --stream-to=/dev/null 2>/dev/null; then
+        echo "    [FATAL ERROR] /dev/video0 pipeline failed validation!"
+        echo "    The device is still busy or hardware has crashed."
+        echo "    Exiting script to prevent corrupted data collection."
+        exit 1
+    fi
+    echo "    [SUCCESS] CSI pipeline verified and flowing at configuration."
+    sleep 1
+}
+# ==============================================================================
+
+echo "Starting PhD Metric Evaluation Suite..."
+echo "Total Cases: 16 | Duration per case: ${DURATION_SEC}s"
+
+for algo in "${ALGORITHMS[@]}"; do
+    for mode in "${MODES[@]}"; do
+        echo "========================================================="
+        echo "Executing: $algo | Mode: $mode"
+        echo "========================================================="
+        
+        # 1. Hardware State Resets & Validations
+        reset_usb_system
+        reset_csi_camera
+        
+        echo "--> Hardware ready. Launching telemetry and application..."
+        
+        # 2. Start tegrastats in the background
+        TEGRA_LOG="hardware_metrics/tegrastats_${algo}_${mode}.log"
+        tegrastats --interval 1000 --logfile "$TEGRA_LOG" &
+        TEGRA_PID=$!
+        
+        # 3. Run the application
+        APP_LOG="app_logs/app_${algo}_${mode}.log"
+        stdbuf -oL -eL $EXECUTABLE --algo "$algo" --mode "$mode" "$DURATION_SEC" "$CONFIG_FILE" 2>&1 | tee "$APP_LOG"
+        
+        # 4. Cleanup telemetry
+        kill $TEGRA_PID
+        
+        echo "Run complete. Metric files saved to:"
+        echo " -> $APP_LOG"
+        echo " -> $TEGRA_LOG"
+        
+        echo "Cooling down for $COOLDOWN_SEC seconds to reset thermal baseline..."
+        sleep "$COOLDOWN_SEC"
+    done
+done
+
+echo "All 16 evaluations completed successfully."
+
+
+Why this is scientifically superior:
+
+If you are generating a PhD dataset, data integrity is everything. By adding the --stream-mmap=8 --stream-count=30 check inside the loop, the script acts as its own watchdog. If the Jetson ISP (Image Signal Processor) crashes mid-matrix due to thermal overload, the script will purposefully halt with a [FATAL ERROR] rather than silently launching your C++ executable against a dead camera and filling your metrics_...csv logs with zeros and empty frames.

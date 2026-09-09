@@ -1,0 +1,94 @@
+graph TD
+    A[Application] -->|Create ConcreteComponentFactory| B[ConcreteComponentFactory]
+    B -->|Create SoC| C[SoCConcrete]
+    B -->|Create Algorithm| D[AlgorithmConcrete]
+    B -->|Create Camera| E[DataConcrete]
+    B -->|Create Display| F[SdlDisplayConcrete]
+    B -->|Create SystemCaptureFactory| G[SystemCaptureFactory]
+    B -->|Set Display| G
+    B -->|Create SystemProfilingFactory| H[SystemProfilingFactory]
+
+    classDiagram
+    class ConcreteComponentFactory {
+        -std::unique_ptr<SystemCaptureFactory> captureFactory_
+        -std::unique_ptr<SystemProfilingFactory> profilingFactory_
+        +ConcreteComponentFactory()
+        +void startSystem(const CameraConfig& camConfig, const AlgorithmConfig& algConfig, const std::string& csvPath)
+        +void stopSystem()
+    }
+
+    class SoCConcrete {
+        +void initializeSoC()
+        +std::string getSpecs()
+        +void stopSoC()
+        +bool configure(const SoCConfig& config)
+        +void setErrorCallback(std::function<void(const std::string&)>)
+        +JetsonNanoInfo getPerformance() const
+    }
+
+    class AlgorithmConcrete {
+        +void configure(const AlgorithmConfig& config)
+    }
+
+    class DataConcrete {
+        +void configure(const CameraConfig& config)
+        +double getLastFPS() const
+        +int getQueueSize() const
+    }
+
+    class SdlDisplayConcrete {
+        +void configure(const DisplayConfig& config)
+        +void initializeDisplay(int width, int height)
+        +void closeDisplay()
+    }
+
+    class SystemCaptureFactory {
+        +SystemCaptureFactory(std::shared_ptr<ISoC> soc, std::shared_ptr<IAlgorithm> algo, std::shared_ptr<IData> camera)
+        +void initializeCapture(const CameraConfig& camConfig, const AlgorithmConfig& algConfig)
+        +void pauseAll()
+        +void resumeAll()
+        +void stopCapture()
+        +void setGlobalErrorCallback(std::function<void(const std::string&)>)
+        +void setDisplay(std::shared_ptr<SdlDisplayConcrete> display)
+    }
+
+    class SystemProfilingFactory {
+        +SystemProfilingFactory(SystemCaptureFactory& captureFactory, int cameraCount)
+        +void startProfiling(const std::string& csvPath)
+        +void stopProfiling()
+    }
+
+    ConcreteComponentFactory --> SoCConcrete
+    ConcreteComponentFactory --> AlgorithmConcrete
+    ConcreteComponentFactory --> DataConcrete
+    ConcreteComponentFactory --> SdlDisplayConcrete
+    ConcreteComponentFactory --> SystemCaptureFactory
+    ConcreteComponentFactory --> SystemProfilingFactory
+
+
+    sequenceDiagram
+    participant Application
+    participant ConcreteComponentFactory
+    participant SoCConcrete
+    participant AlgorithmConcrete
+    participant DataConcrete
+    participant SdlDisplayConcrete
+    participant SystemCaptureFactory
+    participant SystemProfilingFactory
+
+    Application ->> ConcreteComponentFactory: ConcreteComponentFactory()
+    ConcreteComponentFactory ->> SoCConcrete: create SoCConcrete
+    ConcreteComponentFactory ->> AlgorithmConcrete: create AlgorithmConcrete
+    ConcreteComponentFactory ->> DataConcrete: create DataConcrete
+    ConcreteComponentFactory ->> SdlDisplayConcrete: create SdlDisplayConcrete
+    ConcreteComponentFactory ->> SystemCaptureFactory: create SystemCaptureFactory(soc, algo, camera)
+    ConcreteComponentFactory ->> SystemCaptureFactory: setDisplay(display)
+    ConcreteComponentFactory ->> SystemProfilingFactory: create SystemProfilingFactory(captureFactory, 1)
+
+    Application ->> ConcreteComponentFactory: startSystem(camConfig, algConfig, "Metrics.csv")
+    ConcreteComponentFactory ->> SystemCaptureFactory: initializeCapture(camConfig, algConfig)
+    ConcreteComponentFactory ->> SystemProfilingFactory: startProfiling("Metrics.csv")
+
+    Application ->> ConcreteComponentFactory: stopSystem()
+    ConcreteComponentFactory ->> SystemCaptureFactory: stopCapture()
+    ConcreteComponentFactory ->> SystemProfilingFactory: stopProfiling()

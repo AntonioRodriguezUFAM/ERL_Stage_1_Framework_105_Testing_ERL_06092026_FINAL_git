@@ -1,0 +1,192 @@
+  238 |     std::chrono::steady_clock::time_point performanceCheckTime_;
+      |                                           ^~~~~~~~~~~~~~~~~~~~~
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/Stage_01/Concretes/SdlDisplayConcrete_new.h:222:70: warning:   ‘std::shared_ptr<SharedQueue<std::shared_ptr<ZeroCopyFrameData> > > SdlDisplayConcrete::originalQueue_’ [-Wreorder]
+  222 |     std::shared_ptr<SharedQueue<std::shared_ptr<ZeroCopyFrameData>>> originalQueue_;
+      |                                                                      ^~~~~~~~~~~~~~
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/Stage_01/Concretes/SdlDisplayConcrete_new.h:249:8: warning:   when initialized here [-Wreorder]
+  249 | inline SdlDisplayConcrete::SdlDisplayConcrete(
+      |        ^~~~~~~~~~~~~~~~~~
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/Stage_01/Concretes/SdlDisplayConcrete_new.h:223:70: warning: ‘SdlDisplayConcrete::processedQueue_’ will be initialized after [-Wreorder]
+  223 |     std::shared_ptr<SharedQueue<std::shared_ptr<ZeroCopyFrameData>>> processedQueue_;
+      |                                                                      ^~~~~~~~~~~~~~~
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/Stage_01/Concretes/SdlDisplayConcrete_new.h:213:23: warning:   ‘std::atomic<bool> SdlDisplayConcrete::running_’ [-Wreorder]
+  213 |     std::atomic<bool> running_{false};
+      |                       ^~~~~~~~
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/Stage_01/Concretes/SdlDisplayConcrete_new.h:249:8: warning:   when initialized here [-Wreorder]
+  249 | inline SdlDisplayConcrete::SdlDisplayConcrete(
+      |        ^~~~~~~~~~~~~~~~~~
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/SampleTestIntegrationCode_v11.cpp: In function ‘int main(int, char**)’:
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/SampleTestIntegrationCode_v11.cpp:644:52: warning: narrowing conversion of ‘(& config.nlohmann::basic_json<>::operator[]<const char>(((const char*)"LynsynMonitorConfig")))->nlohmann::basic_json<>::value<long long unsigned int>(std::__cxx11::basic_string<char>(((const char*)"startBreakpoint"), std::allocator<char>()), 0)’ from ‘long long unsigned int’ to ‘int’ [-Wnarrowing]
+  644 |                 config["LynsynMonitorConfig"].value("startBreakpoint", 0ULL),
+      |                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~
+[ 33%] Linking CUDA device code CMakeFiles/MySystem.dir/cmake_device_link.o
+[ 50%] Linking CXX executable MySystem
+[100%] Built target MySystem
+ansorosa@jetson:~/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/build$ clear
+
+ansorosa@jetson:~/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/build$ clear
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ansorosa@jetson:~/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/build$ sudo gdb ./MySystem 
+[sudo] password for ansorosa: 
+GNU gdb (Ubuntu 10.2-0ubuntu1~18.04~2) 10.2
+Copyright (C) 2021 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+Type "show copying" and "show warranty" for details.
+This GDB was configured as "aarch64-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<https://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online at:
+    <http://www.gnu.org/software/gdb/documentation/>.
+
+For help, type "help".
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from ./MySystem...
+(gdb) run
+Starting program: /home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_31/build/MySystem 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+[2025-09-02 01:23:04.407] [debug] Debug logging enabled
+[2025-09-02 01:23:04.407] [info] Starting ZeroCopy Pipeline Test at 2025-09-02 01:23:04.407
+[2025-09-02 01:23:04.410] [info] Loaded configuration from config.json
+[2025-09-02 01:23:04.410] [debug] Validating LynsynConfig
+[2025-09-02 01:23:04.410] [info] Validating configurations...
+[2025-09-02 01:23:04.410] [debug] Validating MetricsConfig
+[2025-09-02 01:23:04.410] [info] Metrics config validation Passed.
+[2025-09-02 01:23:04.410] [debug] [Validation::CameraConfig] Validating CameraConfig
+[2025-09-02 01:23:04.410] [info] Camera config validation Passed.
+[2025-09-02 01:23:04.410] [debug] Validating DisplayConfig
+[2025-09-02 01:23:04.410] [info] Display config validation Passed.
+[2025-09-02 01:23:04.410] [debug] Validating AlgorithmConfig
+[2025-09-02 01:23:04.410] [debug] [Utility] Converting algorithm type string: Invert
+[2025-09-02 01:23:04.410] [info] Algorithm config validation Passed.
+[2025-09-02 01:23:04.410] [debug] Validating SoCConfig
+[2025-09-02 01:23:04.410] [info] SoC config validation Passed.
+[2025-09-02 01:23:04.410] [debug] Validating ProfilingConfig
+[2025-09-02 01:23:04.410] [info] Profiling config validation Passed.
+[2025-09-02 01:23:04.410] [debug] Validating SystemBehavior
+[2025-09-02 01:23:04.410] [info] System behavior validation Passed.
+[2025-09-02 01:23:04.410] [info] Run duration set to 150 seconds
+[2025-09-02 01:23:04.410] [debug] [Aggregator Constructor] expectsPower=true
+[2025-09-02 01:23:04.410] [debug] [Aggregator Constructor] CSV Path: metrics_csv/realtime_metrics_010.csv, JSON Path: /tmp/build/realtime_metrics010.ndjson
+[2025-09-02 01:23:04.411] [info] SystemMetricsAggregator initialized. Pass.
+[New Thread 0x7fb787bed0 (LWP 21013)]
+[2025-09-02 01:23:04.412] [debug] Started thread pool worker 0
+[New Thread 0x7fb707aed0 (LWP 21014)]
+[2025-09-02 01:23:04.412] [debug] Started thread pool worker 1
+[2025-09-02 01:23:04.412] [info] Thread pool started with 2 threads
+[2025-09-02 01:23:04.412] [info] ThreadManager initialized. Pass.
+[2025-09-02 01:23:04.412] [info] Initializing SharedQueues...
+[2025-09-02 01:23:04.412] [info] [SharedQueue] Initialized with maxSize: 200.
+[2025-09-02 01:23:04.412] [info] [SharedQueue] Initialized with maxSize: 200.
+[2025-09-02 01:23:04.412] [info] [SharedQueue] Initialized with maxSize: 300.
+[2025-09-02 01:23:04.412] [info] SharedQueues initialized. Pass.
+[2025-09-02 01:23:04.412] [debug] Validating queue capacity for 30 FPS
+[2025-09-02 01:23:04.412] [info] Queues initialized with capacities: cam2Alg=0/200, cam2Disp=0/200, alg2Disp=0/300
+[2025-09-02 01:23:04.412] [info] Queue capacity validated. Pass.
+[New Thread 0x7fb6879ed0 (LWP 21015)]
+[2025-09-02 01:23:04.413] [debug] Started thread pool worker 0
+[New Thread 0x7fb6078ed0 (LWP 21016)]
+[2025-09-02 01:23:04.413] [debug] Started thread pool worker 1
+[2025-09-02 01:23:04.413] [info] Thread pool started with 2 threads
+[2025-09-02 01:23:04.413] [debug] Joined thread pool worker
+[2025-09-02 01:23:04.413] [debug] Joined thread pool worker
+[2025-09-02 01:23:04.413] [info] Thread pool stopped
+[2025-09-02 01:23:04.413] [info] ThreadManager shutdown completed
+[2025-09-02 01:23:04.413] [info] ThreadManager initialized. Pass.
+[Thread 0x7fb707aed0 (LWP 21014) exited]
+[Thread 0x7fb787bed0 (LWP 21013) exited]
+[Detaching after fork from child process 21017]
+[New Thread 0x7fb707aed0 (LWP 21019)]
+[2025-09-02 01:23:04.925] [debug] [SoCConcrete] monitorPerformance() thread started.
+[2025-09-02 01:23:05.026] [info] [SoCConcrete] SoC monitoring started with command 'tegrastats --interval 500'.
+[2025-09-02 01:23:05.026] [info] SoC initialized. Pass.
+[2025-09-02 01:23:05.026] [debug] [LynsynMonitorConcrete] ctor
+[2025-09-02 01:23:05.026] [debug] [LynsynMonitorConfig] Lynsyn Monitor Config: {PASS !!}
+ outputCSV: metrics_csv/lynsyn_output.csv
+ periodSampling: true
+ durationSec: 10
+ coreMask: 15
+ startBreakpoint: 0
+ endBreakpoint: 0
+[2025-09-02 01:23:05.026] [info] [LynsynMonitorConcrete] Initializing Lynsyn library...
+[New Thread 0x7fb787bed0 (LWP 21020)]
+Could not claim interface 0x1, error LIBUSB_ERROR_BUSY
+[2025-09-02 01:23:05.049] [warning] [LynsynMonitorConcrete] lynsyn_init() failed (attempt 1/5). Retrying in 800 ms...
+[Thread 0x7fb787bed0 (LWP 21020) exited]
+[New Thread 0x7fb787bed0 (LWP 21022)]
+Could not claim interface 0x1, error LIBUSB_ERROR_BUSY
+[2025-09-02 01:23:05.857] [warning] [LynsynMonitorConcrete] lynsyn_init() failed (attempt 2/5). Retrying in 800 ms...
+[Thread 0x7fb787bed0 (LWP 21022) exited]
+[New Thread 0x7fb787bed0 (LWP 21023)]
+Could not claim interface 0x1, error LIBUSB_ERROR_BUSY
+[2025-09-02 01:23:06.664] [warning] [LynsynMonitorConcrete] lynsyn_init() failed (attempt 3/5). Retrying in 800 ms...
+[Thread 0x7fb787bed0 (LWP 21023) exited]
+[New Thread 0x7fb787bed0 (LWP 21024)]
+Could not claim interface 0x1, error LIBUSB_ERROR_BUSY
+[2025-09-02 01:23:07.471] [warning] [LynsynMonitorConcrete] lynsyn_init() failed (attempt 4/5). Retrying in 800 ms...
+[Thread 0x7fb787bed0 (LWP 21024) exited]
+[New Thread 0x7fb787bed0 (LWP 21025)]
+Could not claim interface 0x1, error LIBUSB_ERROR_BUSY
+[2025-09-02 01:23:08.279] [warning] [LynsynMonitorConcrete] lynsyn_init() failed (attempt 5/5). Retrying in 800 ms...
+[2025-09-02 01:23:09.079] [error] [LynsynMonitorConcrete] Failed to initialize Lynsyn after retries
+[2025-09-02 01:23:09.079] [warning] Lynsyn initialization failed  continuing without power monitoring.
+[2025-09-02 01:23:09.079] [info] [DataConcrete] Camera initialization.
+[2025-09-02 01:23:09.079] [debug] [DataConcrete] Constructor complete.
+[2025-09-02 01:23:09.079] [debug] [Utility] Converting pixel format string: YUYV
+[2025-09-02 01:23:09.079] [debug] [DataConcrete] Entering openDevice for path /dev/video0.
+[2025-09-02 01:23:09.079] [info] [DataConcrete] Attempting to open device at /dev/video0.
+[2025-09-02 01:23:09.080] [info] [DataConcrete] Device opened: /dev/video0 (fd=6)
+[2025-09-02 01:23:09.080] [debug] [DataConcrete] Entering configure with width 320 and height 240.
+[Thread 0x7fb787bed0 (LWP 21025) exited]
+[2025-09-02 01:23:09.080] [debug] [DataConcrete] Camera configuration updated: 320x240.
+[2025-09-02 01:23:09.080] [error] [DataConcrete] VIDIOC_S_FMT failed: Device or resource busy
+[2025-09-02 01:23:09.080] [info] [SharedQueue] Destroyed.
+[2025-09-02 01:23:09.080] [error] Fatal error: Camera initialization failed
+[2025-09-02 01:23:09.080] [info] [LynsynMonitorConcrete] Monitoring stopped
+[2025-09-02 01:23:09.080] [debug] Joined thread pool worker
+[2025-09-02 01:23:09.080] [debug] Joined thread pool worker
+[2025-09-02 01:23:09.080] [info] Thread pool stopped
+[2025-09-02 01:23:09.080] [info] ThreadManager shutdown completed
+[2025-09-02 01:23:09.080] [info] [LynsynMonitorConcrete] Monitoring stopped
+[2025-09-02 01:23:09.080] [info] ThreadManager shutdown completed
+[Thread 0x7fb6078ed0 (LWP 21016) exited]
+[Thread 0x7fb6879ed0 (LWP 21015) exited]
+[2025-09-02 01:23:09.437] [debug] [SoCConcrete] monitorPerformance() thread exiting.
+[Thread 0x7fb707aed0 (LWP 21019) exited]
+[2025-09-02 01:23:09.437] [info] [SoCConcrete] SoC monitoring stopped.
+[2025-09-02 01:23:09.437] [info] [LynsynMonitorConcrete] Monitoring stopped
+[2025-09-02 01:23:09.437] [debug] [DataConcrete] All buffers unmapped and cleared.
+[2025-09-02 01:23:09.437] [info] [DataConcrete] Device closed.
+[2025-09-02 01:23:09.437] [debug] [DataConcrete] Destructor complete.
+[2025-09-02 01:23:09.437] [info] [SharedQueue] Destroyed.
+[2025-09-02 01:23:09.437] [info] [SharedQueue] Destroyed.
+[2025-09-02 01:23:09.437] [debug] [Aggregator] flushBatchBuffer: no useful snapshots to flush after filtering
+[2025-09-02 01:23:09.438] [debug] [Aggregator] Flushed 8 snapshots
+[2025-09-02 01:23:09.438] [info] ThreadManager shutdown completed
+[Inferior 1 (process 21010) exited with code 01]
+(gdb) 

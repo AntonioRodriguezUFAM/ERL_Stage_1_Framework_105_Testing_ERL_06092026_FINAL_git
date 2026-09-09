@@ -1,0 +1,170 @@
+classDiagram
+
+    %% Main Interfaces & Factories
+    IComponentFactory <|-- ConcreteComponentFactory
+    IConfigurationManager <|-- ConfigurationManager
+
+    ConcreteComponentFactory --> SystemModelingFactory
+    ConcreteComponentFactory --> SystemCaptureFactory
+    ConcreteComponentFactory --> SystemProfilingFactory
+
+    %% Implementation: DataConcrete, AlgorithmConcrete, SoCConcrete
+    IData <|.. DataConcrete
+    IAlgorithm <|.. AlgorithmConcrete
+    ISoC <|.. SoCConcrete
+
+    %% We add CentralPerformanceLogger as a new entity in the diagram:
+    class CentralPerformanceLogger {
+        <<singleton>>
+        - loggerMutex : std::mutex
+        - csvFilePath : std::string
+        - currentData : PerformanceData
+        + getInstance() : CentralPerformanceLogger&
+        + setCSVFilePath(path: string)
+        + pushSoCStats(stats: SoCStats)
+        + pushCameraStats(camIndex: int, stats: CameraStats)
+        + pushAlgorithmStats(stats: AlgorithmStats)
+        + flushRowIfReady() : void
+    }
+
+    %% Each component uses CentralPerformanceLogger in push model:
+    SoCConcrete --> CentralPerformanceLogger : pushSoCStats(SoCStats)
+    DataConcrete --> CentralPerformanceLogger : pushCameraStats(CameraStats)
+    AlgorithmConcrete --> CentralPerformanceLogger : pushAlgorithmStats(AlgorithmStats)
+
+    %% Show partial relationship of SystemCaptureFactory to SoCConcrete, DataConcrete, AlgorithmConcrete
+    SystemCaptureFactory --> SoCConcrete : creates/initializes
+    SystemCaptureFactory --> DataConcrete
+    SystemCaptureFactory --> AlgorithmConcrete
+
+    %% (Optional) SystemProfilingFactory can exist, but is not mandatory
+    SystemProfilingFactory --> ISystemProfiling
+
+    %% Stage 01 (SystemModelingFactory) relationships
+    SystemModelingFactory --> IRawDataFormat
+    SystemModelingFactory --> ISoC
+    SystemModelingFactory --> IAlgorithm
+    SystemModelingFactory --> IData
+    SystemModelingFactory --> IConstraints
+    SystemModelingFactory --> IOptimization
+    SystemModelingFactory --> ILearning
+
+    %% The remainder of your existing relationships:
+    FeatureOptimizationFactory --> IFeatureExtraction
+    FeatureOptimizationFactory --> IFeatureSelection
+    MultiObjectiveOptimizationFactory --> IOptimizationObjectives
+    MultiObjectiveOptimizationFactory --> IOptimizationOption
+    MultiObjectiveOptimizationFactory --> IWorkloadDistribution
+    BenchmarkingFactory --> IPerformanceMonitoring
+    BenchmarkingFactory --> IConstraintMonitoring
+    BenchmarkingFactory --> IParetoOptimal
+    FeedbackLoopFactory --> ITransferLearning
+    FutureDevelopmentFactory --> IFuture01Level1
+    FutureDevelopmentFactory --> IFuture01Level2
+
+    %% Config manager & plugin registry
+    ConfigurationManager --> RawDataConfig
+    ConfigurationManager --> SystemCaptureConfig
+    ConfigurationManager --> SystemProfilingConfig
+    ConfigurationManager --> ConfigUpdateListener
+    ConcreteComponentFactory --> PluginRegistry
+    PluginRegistry --> IPlugin
+
+    %% Omitted the remainder of definitions for brevity
+
+    %% Summaries of classes left as is, focusing on the push-model highlight:
+
+    class IComponentFactory {
+        <<interface>>
+        +createRawDataFormat()
+        +createSoCComponent()
+        +createAlgorithmComponent()
+        +createDataComponent()
+        +createConstraintsComponent()
+        +createOptimizationComponent()
+        +createLearningComponent()
+        +createSystemCapture()
+        +createSystemProfiling()
+        +createFeatureExtraction()
+        +createFeatureSelection()
+        +createOptimizationObjectives()
+        +createOptimizationOption()
+        +createWorkloadDistribution()
+        +createPerformanceMonitoring()
+        +createConstraintMonitoring()
+        +createParetoOptimal()
+        +createTransferLearning()
+        +createFuture01Level1()
+        +createFuture01Level2()
+    }
+
+    class ConcreteComponentFactory {
+        -configManager: IConfigurationManager
+        -systemModelingFactory: SystemModelingFactory
+        -systemCaptureFactory: SystemCaptureFactory
+        -systemProfilingFactory: SystemProfilingFactory
+        -featureOptimizationFactory: FeatureOptimizationFactory
+        -multiObjectiveOptimizationFactory: MultiObjectiveOptimizationFactory
+        -benchmarkingFactory: BenchmarkingFactory
+        -feedbackLoopFactory: FeedbackLoopFactory
+        -futureDevelopmentFactory: FutureDevelopmentFactory
+        -pluginRegistry: PluginRegistry
+        +loadPlugin(pluginPath: string)
+    }
+
+    class IData {
+        <<interface>>
+        +loadData()
+        +processData()
+    }
+
+    class DataConcrete {
+        +openDevice()
+        +configure()
+        +startStreaming()
+        +stopStreaming()
+        +dequeFrame()
+        +pushCameraMetrics()
+    }
+
+    class IAlgorithm {
+        <<interface>>
+        +initializeAlgorithm()
+        +runAlgorithm()
+    }
+
+    class AlgorithmConcrete {
+        +startAlgorithm()
+        +stopAlgorithm()
+        +processFrame()
+        +pushAlgorithmMetrics()
+    }
+
+    class ISoC {
+        <<interface>>
+        +initializeSoC()
+        +getSpecs()
+        +getPerformaces()
+        +stopSoc()
+    }
+
+    class SoCConcrete {
+        +initializeSoC()
+        +stopSoC()
+        +monitoringLoop()
+        +pushSoCStats()
+    }
+
+    class PerformanceData {
+        <<struct>>
+        +timeStamp: chrono::system_clock::time_point
+        +cpuUsage: double
+        +gpuUsage: double
+        +cpuTemp: double
+        +cameraFPS[2]: double
+        +algoFPS: double
+        +algoProcTimeMs: double
+        ...
+    }
+
+    %% Etc. existing classes remain as is

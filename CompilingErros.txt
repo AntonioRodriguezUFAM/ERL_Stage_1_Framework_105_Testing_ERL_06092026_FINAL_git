@@ -1,0 +1,13 @@
+Compiling Errors: Date: 16/08/202
+
+
+    |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~
+
+In file included from /home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_97_Testing_ERL_20082026_FINAL/Module/ConfigManager.h:36,
+                 from /home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_97_Testing_ERL_20082026_FINAL/SampleTestIntegrationCode_v31.cpp:69:
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_97_Testing_ERL_20082026_FINAL/Module/EvolutionarySelector_02.h: In constructor ‘EvolutionarySelector::EvolutionarySelector(const json&, Context&, std::shared_ptr<SystemMetricsAggregatorConcreteV3_2>, std::shared_ptr<hrl::RuntimeControls>, const hrl::ThermalGovernor::Config&, const hrl::AdaptiveWeightManager::Config&)’:
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_97_Testing_ERL_20082026_FINAL/Module/EvolutionarySelector_02.h:168:38: error: ‘activeAlgorithm’ was not declared in this scope
+  168 |         const bool continuousSplit = activeAlgorithm == "HeterogeneousGaussianBlur";
+      |                                      ^~~~~~~~~~~~~~~
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_97_Testing_ERL_20082026_FINAL/SampleTestIntegrationCode_v31.cpp: In function ‘int main(int, char**)’:
+/home/ansorosa/Desktop/CODE_REPOSITORIO/ERL_Stage_1_Framework_97_Testing_ERL_20082026_FINAL/SampleTestIntegrationCode_v31.cpp:941:16: warn
